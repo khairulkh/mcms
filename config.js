@@ -4,13 +4,7 @@
  * dan keamanan data dijamin oleh verifikasi di server Apps Script.
  */
 window.MCMS_CONFIG = {
-  // URL Web App Apps Script (Deploy → Web app → URL yang berakhiran /exec)
-  API_URL: 'GANTI_DENGAN_URL_WEB_APP/exec',
-
-  // Client ID OAuth dari Google Cloud Console (sama dengan di Setup.gs)
-  GOOGLE_CLIENT_ID: 'GANTI_DENGAN_CLIENT_ID.apps.googleusercontent.com',
-
-  // true = coba tampilan tanpa backend (data contoh, tidak tersimpan ke Google).
-  // Setelah API_URL & GOOGLE_CLIENT_ID diisi, ubah menjadi false.
-  DEMO_MODE: true
-};
+ API_URL: 'https://script.google.com/macros/s/AKfycbzNAqGJTOCfcQjKw0bGGud_2v-gjteWTqYIYR2YZ3kEQ_C3sI5oUNEgPh4LRRfi4JTJ7g/exec',  // dari Langkah 4
+     GOOGLE_CLIENT_ID: '482980661772-ljsts1d29g8cqfdvecsk1l6e2lid0sef.apps.googleusercontent.com',     // dari Langkah 2
+     DEMO_MODE: false
+   };
