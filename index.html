@@ -56,7 +56,9 @@
   <div id="overlay-root"></div>
   <div id="toast-root" class="toast-root" aria-live="polite" aria-atomic="false"></div>
 
-  <script src="config.js"></script>
+  <!-- config.js selalu diambil versi terbaru, agar perubahan konfigurasi langsung berlaku (tanpa menunggu cache) -->
+  <script>document.write('<script src="config.js?t=' + Date.now() + '"><\/script>');</script>
+  <noscript>MCMS membutuhkan JavaScript.</noscript>
   <script>
     /* Memuat skrip berurutan. Skrip mode demo hanya dimuat bila DEMO_MODE = true. */
     (function () {
