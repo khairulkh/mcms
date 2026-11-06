@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>MCMS — Media Center Workspace</title>
+  <meta name="description" content="Kelola proyek, konten, arsip, dan laporan Media Center dalam satu workspace.">
+  <meta name="theme-color" content="#5B4BD6">
+  <meta name="referrer" content="strict-origin-when-cross-origin">
+  <link rel="icon" href="assets/icon.svg" type="image/svg+xml">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="assets/icon.svg">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@600;700;800&display=swap">
+  <link rel="stylesheet" href="assets/app.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Langsung ke konten utama</a>
+
+  <!-- Memuat -->
+  <div id="boot" class="boot" role="status" aria-live="polite">
+    <div class="boot-mark" aria-hidden="true">MC</div>
+    <p>Menyiapkan workspace…</p>
+  </div>
+
+  <!-- Halaman login / undangan -->
+  <main id="auth-view" class="auth" tabindex="-1" hidden></main>
+
+  <!-- Aplikasi -->
+  <div id="app-view" class="app" hidden>
+    <header class="topbar">
+      <button class="icon-btn only-tablet" id="btn-collapse" type="button" aria-label="Lebar/sempitkan menu" aria-expanded="true"></button>
+      <a class="brand" id="brand" href="#/"></a>
+      <div class="topbar-spacer"></div>
+      <button class="search-btn" id="btn-search" type="button" aria-label="Cari proyek, tugas, file" hidden></button>
+      <div class="mode-switch" id="mode-switch"></div>
+      <div class="user-menu">
+        <button class="avatar-btn" id="btn-user" type="button" aria-haspopup="menu" aria-expanded="false"></button>
+        <div class="popover" id="user-popover" role="menu" hidden></div>
+      </div>
+    </header>
+
+    <aside class="sidebar" id="sidebar" aria-label="Menu utama">
+      <nav id="side-nav"></nav>
+    </aside>
+
+    <div class="content">
+      <div id="mode-banner"></div>
+      <main id="main" tabindex="-1"></main>
+    </div>
+
+    <nav class="bottom-nav" id="bottom-nav" aria-label="Menu bawah"></nav>
+  </div>
+
+  <div id="overlay-root"></div>
+  <div id="toast-root" class="toast-root" aria-live="polite" aria-atomic="false"></div>
+
+  <script src="config.js"></script>
+  <script>
+    /* Memuat skrip berurutan. Skrip mode demo hanya dimuat bila DEMO_MODE = true. */
+    (function () {
+      var v = '1.0.0';
+      var files = ['assets/app.js', 'assets/js/kit.js', 'assets/js/home.js', 'assets/js/work.js', 'assets/js/assets.js',
+        'assets/js/reports.js', 'assets/js/exec.js', 'assets/js/settings.js', 'assets/js/start.js'];
+      if (window.MCMS_CONFIG && window.MCMS_CONFIG.DEMO_MODE) {
+        files = ['assets/demo/gas-sim.js', 'assets/demo/backend.bundle.js', 'assets/demo/demo-boot.js'].concat(files);
+      }
+      files.forEach(function (src) {
+        var s = document.createElement('script');
+        s.src = src + '?v=' + v;
+        s.async = false;
+        s.onerror = function () {
+          var b = document.getElementById('boot');
+          if (b) b.innerHTML = '<p role="alert">Gagal memuat ' + src + '. Periksa koneksi lalu muat ulang halaman.</p>';
+        };
+        document.body.appendChild(s);
+      });
+    })();
+  </script>
+</body>
+</html>

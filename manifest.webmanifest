@@ -1,0 +1,9 @@
+{
+  "name": "MCMS — Media Center Workspace",
+  "short_name": "MCMS",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#F5F6FA",
+  "theme_color": "#5B4BD6",
+  "icons": [{ "src": "assets/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}
