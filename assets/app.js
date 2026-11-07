@@ -186,6 +186,8 @@
   }
 
   var lastFocus = null;
+  var overlayDocKey = null;
+  var overlayOnClose = null;
   function openOverlay(html, opts) {
     opts = opts || {};
     closeOverlay();
@@ -206,6 +208,16 @@
     });
     var first = $('[data-autofocus]', ov) || $('input:not([type=hidden]), select, textarea, button, a[href]', ov);
     if (first) first.focus();
+    /* Jika isi dialog digambar ulang, fokus bisa jatuh ke <body>. Esc & Tab tetap bekerja dan fokus dikembalikan ke dialog. */
+    overlayOnClose = opts.onClose || null;
+    ov.setAttribute('tabindex', '-1');
+    if (overlayDocKey) document.removeEventListener('keydown', overlayDocKey);
+    overlayDocKey = function (e) {
+      if (!document.body.contains(ov) || ov.contains(document.activeElement)) return;
+      if (e.key === 'Escape') { if (!opts.persistent) closeOverlay(); }
+      else if (e.key === 'Tab') { e.preventDefault(); var t = $('input:not([type=hidden]), select, textarea, button, a[href]', ov); (t || ov).focus(); }
+    };
+    document.addEventListener('keydown', overlayDocKey);
     return ov;
   }
   function closeOverlay() {
@@ -213,7 +225,10 @@
     if (root && root.innerHTML) {
       root.innerHTML = '';
       document.body.classList.remove('has-overlay');
+      if (overlayDocKey) { document.removeEventListener('keydown', overlayDocKey); overlayDocKey = null; }
       if (lastFocus && document.body.contains(lastFocus)) lastFocus.focus();
+      var cb = overlayOnClose; overlayOnClose = null;
+      if (cb) setTimeout(cb, 0);
     }
   }
 
@@ -1007,8 +1022,10 @@
       var link = res.inviteLink;
       var waText = 'Assalamu\'alaikum/Halo, berikut tautan akses pemantauan Media Center (berlaku 7 hari, masuk dengan akun Google ' + res.user.email + '): ' + link;
       $('#invite-result').innerHTML = '<div class="alert ' + (res.emailSent ? 'alert-success' : 'alert-warning') + '">' + icon(res.emailSent ? 'checkCircle' : 'alert') +
-        '<div><strong>' + (res.emailSent ? 'Undangan terkirim ke ' + esc(res.user.email) : 'Undangan dibuat, tetapi email gagal terkirim') + '</strong>' +
-        'Kamu juga bisa membagikan tautan ini langsung. Tautan hanya tampil sekali.</div></div>' +
+        '<div><strong>' + (res.emailSent ? 'Email undangan dikirim ke ' + esc(res.user.email) : 'Undangan dibuat, tetapi email gagal terkirim') + '</strong>' +
+        (res.emailSent ? 'Email dikirim dari Gmail <b>' + esc(res.senderEmail || '') + '</b> (salinannya ada di folder Terkirim). Bila belum masuk dalam beberapa menit, minta atasan memeriksa folder <b>Spam</b> atau <b>Promosi</b>, atau kirim tautan di bawah lewat WhatsApp.'
+          : '<b>Penyebab:</b> ' + esc(res.emailError || 'tidak diketahui') + ' Sementara itu, kirim tautan di bawah lewat WhatsApp atau salin manual.') +
+        ' Tautan hanya tampil sekali.</div></div>' +
         '<div class="link-box"><label class="sr-only" for="inv-link">Tautan undangan</label><input class="input" id="inv-link" readonly value="' + esc(link) + '">' +
         '<button class="btn btn-secondary" type="button" id="copy-link">' + icon('copy') + 'Salin</button></div>' +
         '<a class="btn btn-ghost btn-block" style="margin-top:8px" target="_blank" rel="noopener" href="https://wa.me/?text=' + encodeURIComponent(waText) + '">' + icon('whatsapp') + 'Bagikan via WhatsApp</a>';
