@@ -153,11 +153,13 @@
   MC.openTask = function (taskId, onChange, wasChanged) {
     var changed = !!wasChanged;
     var ov = MC.openOverlay('<div class="drawer-head"><h2 id="dlg-title">Detail tugas</h2><button class="icon-btn" type="button" data-close aria-label="Tutup">' + icon('x') + '</button></div>' +
-      '<div class="drawer-body" id="td-body">' + MC.loadingBox(200) + '</div>', { drawer: true });
-    var close = function () { MC.closeOverlay(); if (changed && onChange) onChange(); };
-    $('[data-close]', ov).addEventListener('click', close);
-    ov.addEventListener('keydown', function (e) { if (e.key === 'Escape' && changed && onChange) setTimeout(onChange, 0); });
-    ov.addEventListener('click', function (e) { if (e.target === ov && changed && onChange) setTimeout(onChange, 0); });
+      '<div class="drawer-body" id="td-body">' + MC.loadingBox(200) + '</div>', {
+        drawer: true,
+        // Dipanggil untuk semua cara menutup (X, Esc, klik di luar). Saat berpindah ke form lain (handoff), daftar tidak dimuat ulang dulu.
+        onClose: function () { if (changed && onChange && !handoff) onChange(); }
+      });
+    var handoff = false;
+    $('[data-close]', ov).addEventListener('click', MC.closeOverlay);
 
     function load() {
       MC.api('tasks.get', { taskId: taskId }).then(render, function (e) {
@@ -201,10 +203,11 @@
       r.addEventListener('input', function () { out.textContent = r.value + '%'; });
       r.addEventListener('change', function () { clearTimeout(deb); deb = setTimeout(function () { update({ progress: Number(r.value) }, 'Progres disimpan.'); }, 150); });
       $('#td-block-save').addEventListener('click', function () { update({ blockerNote: $('#td-block').value }, 'Kendala disimpan.'); });
-      $('#td-log').addEventListener('click', function () { activityForm(null, { taskId: t.taskId, projectId: t.projectId, title: t.title }, function () { changed = true; MC.openTaskAgain(); }); });
-      $('#td-up').addEventListener('click', function () { MC.uploadDialog({ taskId: t.taskId, projectId: t.projectId, label: t.title }, function () { changed = true; MC.openTaskAgain(); }); });
-      $('#td-edit').addEventListener('click', function () { taskForm(t, {}, function () { changed = true; MC.openTaskAgain(); }); });
+      $('#td-log').addEventListener('click', function () { handoff = true; activityForm(null, { taskId: t.taskId, projectId: t.projectId, title: t.title }, function () { changed = true; MC.openTaskAgain(); }); });
+      $('#td-up').addEventListener('click', function () { handoff = true; MC.uploadDialog({ taskId: t.taskId, projectId: t.projectId, label: t.title }, function () { changed = true; MC.openTaskAgain(); }); });
+      $('#td-edit').addEventListener('click', function () { handoff = true; taskForm(t, {}, function () { changed = true; MC.openTaskAgain(); }); });
       $('#td-del').addEventListener('click', function () {
+        handoff = true;
         MC.confirmDialog({ title: 'Hapus tugas?', message: '"' + t.title + '" akan dihapus dari daftar. File bukti di Google Drive tidak ikut terhapus.', danger: true, confirmText: 'Hapus tugas', icon: 'trash' })
           .then(function (yes) {
             if (!yes) { MC.openTaskAgain(); return; }

@@ -279,7 +279,9 @@
     state.branding = b;
     document.title = (b && b.appName) ? b.appName : 'MCMS — Media Center Workspace';
     var brand = $('#brand');
-    if (brand) { brand.innerHTML = brandMarkup(b); brand.setAttribute('aria-label', (b.appName || 'MCMS') + ' — ke beranda'); }
+    [brand, $('#brand-side')].forEach(function (el) {
+      if (el) { el.innerHTML = brandMarkup(b); el.setAttribute('aria-label', (b.appName || 'MCMS') + ' — ke beranda'); }
+    });
   }
 
   function loadBranding() {

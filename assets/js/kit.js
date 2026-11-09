@@ -323,6 +323,28 @@
     return '<div class="wk-chart" aria-hidden="false">' + bars + '</div>' + table;
   };
 
+  /* ---------- Bar status tugas (satu bar bertumpuk + legenda berlabel) ---------- */
+  MC.statusBar = function (ts) {
+    if (!ts || !ts.total) return '<p class="hint chart-empty">' + icon('tasks', 'width="16" height="16"') + ' Belum ada tugas.</p>';
+    var parts = [['DONE', 'Selesai', 'sb-done'], ['REVIEW', 'Review', 'sb-review'], ['IN_PROGRESS', 'Dikerjakan', 'sb-prog'], ['TODO', 'Belum mulai', 'sb-todo']];
+    var bar = parts.filter(function (p) { return ts[p[0]]; }).map(function (p) {
+      var pct = ts[p[0]] / ts.total * 100;
+      return '<span class="sb-seg ' + p[2] + '" style="width:' + pct.toFixed(2) + '%" title="' + esc(p[1] + ': ' + ts[p[0]]) + '"></span>';
+    }).join('');
+    return '<div class="sb-bar" role="img" aria-label="' + esc(parts.map(function (p) { return p[1] + ' ' + ts[p[0]]; }).join(', ') + ' dari ' + ts.total + ' tugas') + '">' + bar + '</div>' +
+      '<dl class="sb-legend">' + parts.map(function (p) {
+        return '<div><dt><span class="sb-key ' + p[2] + '" aria-hidden="true"></span>' + esc(p[1]) + '</dt><dd class="num">' + ts[p[0]] + '</dd></div>';
+      }).join('') + '<div><dt><span class="sb-key sb-late" aria-hidden="true"></span>Terlambat</dt><dd class="num">' + ts.overdue + '</dd></div></dl>';
+  };
+
+  /** Kartu pengingat bergradasi (ajakan bertindak utama). */
+  MC.reminderCard = function (o) {
+    return '<section class="reminder-card" aria-labelledby="rm-title"><div class="rm-art" aria-hidden="true"><span></span><span></span><span></span>' + icon(o.icon || 'activity') + '</div>' +
+      '<div class="rm-text"><div class="rm-eyebrow">' + esc(o.eyebrow || 'Pengingat') + '</div><h2 id="rm-title">' + esc(o.title) + '</h2>' +
+      (o.sub ? '<p>' + esc(o.sub) + '</p>' : '') + '</div>' +
+      (o.action ? '<button class="btn rm-btn" type="button" ' + o.action + '>' + esc(o.button) + '</button>' : '') + '</section>';
+  };
+
   /* ---------- Daftar ringkas ---------- */
   MC.taskRow = function (t, opts) {
     opts = opts || {};

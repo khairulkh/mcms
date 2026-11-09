@@ -302,7 +302,7 @@
       CacheService: { getScriptCache: function () { return cache; } },
       LockService: { getScriptLock: function () { return lock; } },
       UrlFetchApp: UrlFetchApp,
-      MailApp: { sendEmail: function (msg) { if (state.failMail) throw new Error('Service invoked too many times: email'); state.mails.push(msg); } },
+      MailApp: { getRemainingDailyQuota: function () { return state.failMail ? 0 : 100 - state.mails.length; }, sendEmail: function (msg) { if (state.failMail) throw new Error('Service invoked too many times: email'); state.mails.push(msg); } },
       Session: { getEffectiveUser: function () { return { getEmail: function () { return state.effectiveEmail; } }; } },
       ContentService: {
         MimeType: { JSON: 'application/json' },

@@ -25,6 +25,22 @@
     });
   };
 
+  /** Pengingat kontekstual: laporan mingguan di akhir pekan, catat aktivitas bila hari ini masih kosong. */
+  function reminder(d) {
+    var dow = new Date().getDay();
+    var today = d.week && d.week.length ? d.week[d.week.length - 1] : null;
+    if (dow === 5 || dow === 6 || dow === 0) {
+      return MC.reminderCard({ icon: 'report', title: 'Buat laporan mingguan', sub: 'Rangkum pekerjaan minggu ini dan terbitkan untuk atasan.', button: 'Buat laporan', action: 'data-create="report"' });
+    }
+    if (today && !today.activities) {
+      return MC.reminderCard({ icon: 'activity', title: 'Catat aktivitas hari ini', sub: 'Cukup 10–30 detik. Catatan ini otomatis masuk laporan.', button: 'Catat sekarang', action: 'data-create="activity"' });
+    }
+    if (d.stats.overdueTasks) {
+      return MC.reminderCard({ icon: 'alert', title: d.stats.overdueTasks + ' tugas terlambat', sub: 'Perbarui status atau tulis kendalanya agar atasan tahu.', button: 'Lihat tugas', action: 'data-go="#/tasks/overdue"' });
+    }
+    return MC.reminderCard({ icon: 'checkCircle', eyebrow: 'Kerja bagus', title: 'Aktivitas hari ini tercatat', sub: 'Jangan lupa unggah bukti kerja dari tugas yang selesai.', button: 'Unggah bukti', action: 'data-create="upload"' });
+  }
+
   MC.PAGES.overview = function (main) {
     MC.skeletonPage(main);
     MC.api('dashboard.owner').then(function (d) {
@@ -72,7 +88,8 @@
         '<div class="stack">' +
         '<section class="card"><div class="card-head"><div><h2>Fokus hari ini</h2><p>Terlambat & deadline hari ini</p></div><a class="btn btn-ghost btn-sm" href="#/tasks">Semua tugas' + icon('arrowRight') + '</a></div><div class="card-body flush" id="focus-list">' + focusHtml + '</div></section>' +
         '<section class="card"><div class="card-head"><div><h2>Sedang dikerjakan</h2></div></div><div class="card-body flush" id="prog-list">' + progHtml + '</div></section>' +
-        '</div><div class="stack">' +
+        '</div><div class="stack">' + reminder(d) +
+        '<section class="card"><div class="card-head"><div><h2>Statistik tugas</h2><p>' + d.taskStatus.total + ' tugas aktif & selesai</p></div><a class="btn btn-ghost btn-sm" href="#/tasks/all">Semua' + icon('arrowRight') + '</a></div><div class="card-body">' + MC.statusBar(d.taskStatus) + '</div></section>' +
         '<section class="card"><div class="card-head"><div><h2>Jam kerja 7 hari</h2><p>Total ' + esc(String(s.hoursThisWeek).replace('.', ',')) + ' jam dari catatan aktivitas</p></div></div><div class="card-body">' + MC.weekChart(d.week, 'minutes', 'jam kerja') + '</div></section>' +
         (fb.length ? '<section class="card accent-card"><div class="card-head"><div><h2>' + icon('message') + ' Feedback atasan</h2><p>' + fb.length + ' belum dibaca</p></div><a class="btn btn-ghost btn-sm" href="#/feedback">Lihat semua</a></div><div class="card-body"><ul class="review-list">' +
           fb.slice(0, 2).map(function (r) { return MC.reviewItem(r, { owner: true, showEntity: true }); }).join('') + '</ul></div></section>' : '') +
@@ -90,6 +107,7 @@
       MC.bindTaskRows(main, reload);
       MC.bindAck(main, reload);
       $$('[data-create]', main).forEach(function (b) { b.addEventListener('click', function () { MC.create(b.getAttribute('data-create'), reload); }); });
+      $$('[data-go]', main).forEach(function (b) { b.addEventListener('click', function () { location.hash = b.getAttribute('data-go'); }); });
       $$('[data-setup-act]', main).forEach(function (b) { b.addEventListener('click', function () { MC.create(b.getAttribute('data-setup-act'), reload); }); });
       MC.focusHeading();
     }, function (err) { MC.errorState(main, err, function () { MC.PAGES.overview(main); }); });
@@ -128,6 +146,7 @@
         (d.latestReport ? '<a class="report-mini" href="#/exec-reports/' + encodeURIComponent(d.latestReport.reportId) + '"><span class="dot-ico">' + icon('report') + '</span><span class="grow"><span class="t">' + esc(d.latestReport.title) + '</span>' +
           '<span class="d">' + (d.latestReport.stats ? esc(d.latestReport.stats.tasksDone) + ' tugas selesai · ' + esc(d.latestReport.stats.activities) + ' aktivitas' : '') + '</span></span>' + icon('arrowRight', 'width="18" height="18"') + '</a>'
           : '<p class="hint">Belum ada laporan yang diterbitkan.</p>') + '</div></section>' +
+        '<section class="card"><div class="card-head"><div><h2>Statistik tugas</h2><p>Tugas yang dibagikan</p></div></div><div class="card-body">' + MC.statusBar(d.taskStatus) + '</div></section>' +
         '<section class="card"><div class="card-head"><div><h2>Aktivitas 7 hari</h2><p>Jumlah kegiatan per hari</p></div></div><div class="card-body">' + MC.weekChart(d.week, 'activities', 'aktivitas') + '</div></section>' +
         '<section class="card"><div class="card-head"><div><h2>Aktivitas terbaru</h2></div><a class="btn btn-ghost btn-sm" href="#/exec-activity">Semua' + icon('arrowRight') + '</a></div><div class="card-body">' +
         (d.recentActivity.length ? '<ul class="act-list">' + d.recentActivity.map(function (a) { return MC.activityRow(a, { showDate: true }); }).join('') + '</ul>'

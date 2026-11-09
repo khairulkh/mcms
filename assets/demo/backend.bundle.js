@@ -25,7 +25,8 @@ window.MCMSBackendFactory = function (G) {
 var SETUP_CONFIG = {
   // Client ID dari Google Cloud Console → Credentials → OAuth client ID (Web application)
   GOOGLE_CLIENT_ID: 'TEMPEL_CLIENT_ID_DI_SINI.apps.googleusercontent.com',
-  // Alamat frontend MCMS (GitHub Pages / Cloudflare Pages), diakhiri garis miring
+  // Alamat frontend MCMS (GitHub Pages / Cloudflare Pages). Boleh dikosongkan dulu dan diisi nanti;
+  // hanya dibutuhkan untuk tautan undangan atasan. Contoh: 'https://namakamu.github.io/mcms/'
   APP_URL: 'https://USERNAME.github.io/mcms/',
   // Zona waktu sekolah
   TIMEZONE: 'Asia/Jakarta',
@@ -41,13 +42,13 @@ function setupMCMS() {
   var report = [];
   var cfg = SETUP_CONFIG;
 
-  if (!cfg.GOOGLE_CLIENT_ID || cfg.GOOGLE_CLIENT_ID.indexOf('TEMPEL_') === 0 ||
-      !/\.apps\.googleusercontent\.com$/.test(cfg.GOOGLE_CLIENT_ID)) {
-    throw new Error('Isi SETUP_CONFIG.GOOGLE_CLIENT_ID dengan Client ID dari Google Cloud terlebih dahulu.');
-  }
-  if (!/^(https:\/\/.+|http:\/\/localhost(:\d+)?)\/$/.test(cfg.APP_URL) || cfg.APP_URL.indexOf('USERNAME') >= 0) {
-    throw new Error('Isi SETUP_CONFIG.APP_URL dengan alamat frontend (https://..., diakhiri "/").');
-  }
+  // Nilai yang belum diisi tidak menghentikan instalasi: database & folder tetap dibuat,
+  // nilai lama (jika ada) dipertahankan, dan log menampilkan apa yang masih perlu dilengkapi.
+  var clientId = normalizeClientId_(cfg.GOOGLE_CLIENT_ID) || Props.get('GOOGLE_CLIENT_ID') || '';
+  var appUrl = normalizeAppUrl_(cfg.APP_URL) || Props.get('APP_URL') || '';
+  var todo = [];
+  if (!clientId) todo.push('GOOGLE_CLIENT_ID belum diisi → login belum bisa dipakai. Isi Client ID dari Google Cloud (Langkah 2), lalu jalankan setupMCMS lagi.');
+  if (!appUrl) todo.push('APP_URL belum diisi → tautan undangan atasan belum bisa dibuat. Isi alamat GitHub Pages (Langkah 1), lalu jalankan setupMCMS lagi.');
 
   var ownerEmail = String(Session.getEffectiveUser().getEmail() || '').toLowerCase();
   if (!ownerEmail) throw new Error('Email pemilik tidak terbaca. Jalankan setupMCMS() langsung dari editor Apps Script.');
@@ -65,8 +66,8 @@ function setupMCMS() {
     Props.setAll({
       SPREADSHEET_ID: ss.getId(),
       DRIVE_ROOT_ID: root.getId(),
-      GOOGLE_CLIENT_ID: cfg.GOOGLE_CLIENT_ID,
-      APP_URL: cfg.APP_URL,
+      GOOGLE_CLIENT_ID: clientId,
+      APP_URL: appUrl,
       TIMEZONE: cfg.TIMEZONE || 'Asia/Jakarta',
       SCHEMA_VERSION: SCHEMA_VERSION
     });
@@ -119,9 +120,36 @@ function setupMCMS() {
 
   var summary = 'MCMS siap.\n- ' + report.join('\n- ') +
     '\n\nSpreadsheet: ' + SpreadsheetApp.openById(Props.get('SPREADSHEET_ID')).getUrl() +
-    '\nLangkah berikutnya: Deploy → New deployment → Web app (Execute as: Me, Who has access: Anyone).';
+    '\nClient ID: ' + (clientId ? 'terisi' : 'BELUM DIISI') + '\nAPP_URL: ' + (appUrl || 'BELUM DIISI') +
+    (todo.length ? '\n\nPERLU DILENGKAPI:\n- ' + todo.join('\n- ') : '') +
+    '\n\nLangkah berikutnya: Deploy → New deployment → Web app (Execute as: Me, Who has access: Anyone).';
   Logger.log(summary);
+  if (todo.length) console.warn('PERLU DILENGKAPI:\n- ' + todo.join('\n- '));
   return summary;
+}
+
+/** Merapikan APP_URL: tambah https:// dan "/" di akhir, buang ?query/#hash/index.html. '' bila belum diisi. */
+function normalizeAppUrl_(v) {
+  var s = String(v || '').trim().replace(/^['"\s]+|['"\s]+$/g, '');
+  if (!s || /USERNAME|GANTI|TEMPEL|namakamu/i.test(s)) return '';
+  if (!/^[a-z]+:\/\//i.test(s)) s = 'https://' + s;
+  s = s.replace(/[?#].*$/, '').replace(/index\.html$/i, '');
+  if (s.charAt(s.length - 1) !== '/') s += '/';
+  if (/^http:\/\//i.test(s) && !/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?\//i.test(s)) s = s.replace(/^http:/i, 'https:');
+  if (!/^(https:\/\/[^\s\/]+\.[^\s\/]+\/\S*|http:\/\/(localhost|127\.0\.0\.1)(:\d+)?\/\S*)$/i.test(s)) {
+    throw new Error('APP_URL tidak valid: "' + v + '". Contoh yang benar: https://namakamu.github.io/mcms/ — atau kosongkan dulu (\'\').');
+  }
+  return s;
+}
+
+/** Merapikan Client ID. '' bila belum diisi; format salah → pesan jelas. */
+function normalizeClientId_(v) {
+  var s = String(v || '').trim().replace(/^['"\s]+|['"\s]+$/g, '');
+  if (!s || /^TEMPEL_|^GANTI/i.test(s)) return '';
+  if (!/^[\w-]+\.apps\.googleusercontent\.com$/.test(s)) {
+    throw new Error('GOOGLE_CLIENT_ID tidak valid: "' + v + '". Formatnya seperti 1234-abcd.apps.googleusercontent.com (salin dari Google Cloud → Clients).');
+  }
+  return s;
 }
 
 function setupDrive_(report) {
@@ -222,6 +250,25 @@ function checkMCMS() {
     '\nAPP_URL: ' + Props.get('APP_URL');
   Logger.log(msg);
   return msg;
+}
+
+/**
+ * Jalankan dari editor Apps Script untuk memeriksa pengiriman email undangan.
+ * Mengirim email uji ke akun pemilik dan menampilkan sisa kuota email harian.
+ */
+function cekEmailUndangan() {
+  var me = Session.getEffectiveUser().getEmail();
+  var quota = MailApp.getRemainingDailyQuota();
+  var lines = ['Akun pengirim: ' + me, 'Sisa kuota email hari ini: ' + quota];
+  if (quota < 1) {
+    lines.push('GAGAL: kuota email harian habis. Coba lagi besok, atau bagikan tautan undangan lewat Salin/WhatsApp.');
+  } else {
+    MailApp.sendEmail({ to: me, subject: 'Tes email MCMS', body: 'Jika email ini sampai, MCMS bisa mengirim undangan atasan.\n\nCek juga folder Spam/Promosi di Gmail atasan.', name: 'MCMS' });
+    lines.push('BERHASIL: email uji dikirim ke ' + me + '. Cek kotak masuk (atau Spam).');
+    lines.push('Email undangan dikirim DARI akun ini; salinannya terlihat di folder "Terkirim" Gmail ' + me + '.');
+  }
+  Logger.log(lines.join('\n'));
+  return lines.join('\n');
 }
 
 // ==================== Config.gs ====================
@@ -793,6 +840,7 @@ var Auth = (function () {
     var info;
     try { info = JSON.parse(res.getContentText()); } catch (e) { info = null; }
     var clientId = Props.get('GOOGLE_CLIENT_ID');
+    if (!clientId) throw new AppError(ERR.NOT_INITIALIZED, 'Login belum aktif: Client ID Google belum diisi. Pemilik perlu mengisi GOOGLE_CLIENT_ID di Code.gs lalu menjalankan setupMCMS lagi.');
     if (!info || !clientId || info.aud !== clientId) {
       throw new AppError(ERR.UNAUTHENTICATED, 'Login ditolak: token bukan untuk aplikasi MCMS.');
     }
@@ -924,6 +972,7 @@ var UserService = (function () {
 
   function inviteLink(token) {
     var base = Props.get('APP_URL') || '';
+    if (!base) throw new AppError(ERR.VALIDATION, 'Alamat aplikasi (APP_URL) belum diisi, jadi tautan undangan belum bisa dibuat. Isi APP_URL di Code.gs, jalankan setupMCMS lagi, lalu undang ulang.');
     return base + '#invite=' + token;
   }
 
@@ -940,13 +989,36 @@ var UserService = (function () {
       'border-radius:10px;text-decoration:none;font-weight:bold">Terima undangan</a></p>' +
       '<p style="font-size:13px;color:#4B5563">Masuk menggunakan akun Google <b>' + escapeHtml(email) + '</b>. ' +
       'Tautan berlaku ' + INVITE_TTL_DAYS + ' hari dan hanya bisa dipakai satu kali.</p></div>';
+    var text = 'Halo ' + (displayName || email) + ',\n\n' + (owner.display_name || owner.email) + ' mengundang Anda sebagai Atasan (Supervisor)' +
+      (org ? ' di ' + org : '') + ' untuk memantau progres dan hasil kerja Media Center.\n\nBuka tautan ini untuk menerima undangan:\n' + link +
+      '\n\nMasuk menggunakan akun Google ' + email + '. Tautan berlaku ' + INVITE_TTL_DAYS + ' hari dan hanya bisa dipakai satu kali.\n';
     try {
-      MailApp.sendEmail({ to: email, subject: 'Undangan akses ' + appName, htmlBody: html, name: appName });
-      return true;
+      var quota = MailApp.getRemainingDailyQuota();
+      if (quota < 1) return { sent: false, error: 'Kuota email harian akun Google pemilik sudah habis (batas Gmail ±100 email/hari). Coba lagi besok, atau bagikan tautan secara manual.' };
+      // Teks biasa + HTML, nama pengirim jelas, dan balasan ke pemilik: mengurangi kemungkinan masuk Spam.
+      MailApp.sendEmail({
+        to: email,
+        subject: 'Undangan dari ' + (owner.display_name || owner.email) + ' — ' + appName,
+        body: text, htmlBody: html,
+        name: (owner.display_name || appName) + ' (MCMS)',
+        replyTo: owner.email
+      });
+      return { sent: true, error: '' };
     } catch (e) {
       console.error('Email undangan gagal: ' + e.message);
-      return false;
+      return { sent: false, error: explainMailError(e.message) };
     }
+  }
+
+  /** Menerjemahkan error MailApp menjadi pesan yang bisa ditindaklanjuti. */
+  function explainMailError(msg) {
+    msg = String(msg || '');
+    if (/too many times|quota|Kuota|limit/i.test(msg)) return 'Kuota email harian akun Google pemilik sudah habis. Coba lagi besok, atau bagikan tautan secara manual.';
+    if (/permission|authoriz|izin|script\.send_mail|required permissions/i.test(msg)) {
+      return 'Apps Script belum diberi izin mengirim email. Di editor Apps Script, jalankan fungsi cekEmailUndangan sekali dan klik Allow, lalu Deploy → Manage deployments → Edit → New version.';
+    }
+    if (/Invalid email|recipient/i.test(msg)) return 'Alamat email tujuan ditolak Gmail. Periksa penulisan alamatnya.';
+    return 'Gmail menolak pengiriman: ' + msg.slice(0, 160);
   }
 
   function escapeHtml(s) {
@@ -975,9 +1047,9 @@ var UserService = (function () {
       row = Db.insert('USERS', fields);
     }
     var link = inviteLink(token);
-    var emailSent = sendInviteEmail(email, fields.display_name, link, owner);
-    Audit.log(owner, existing ? 'INVITE_REISSUED' : 'INVITE_CREATED', 'USERS', row.user_id, { email: email, emailSent: emailSent });
-    return { user: publicUser(Db.findOne('USERS', 'user_id', row.user_id)), inviteLink: link, emailSent: emailSent };
+    var mail = sendInviteEmail(email, fields.display_name, link, owner);
+    Audit.log(owner, existing ? 'INVITE_REISSUED' : 'INVITE_CREATED', 'USERS', row.user_id, { email: email, emailSent: mail.sent, emailError: mail.error });
+    return { user: publicUser(Db.findOne('USERS', 'user_id', row.user_id)), inviteLink: link, emailSent: mail.sent, emailError: mail.error, senderEmail: owner.email };
   }
 
   function getSupervisor(userId) {
@@ -2751,6 +2823,17 @@ var DashboardService = (function () {
     });
   }
 
+  /** Jumlah tugas per status (tanpa yang batal) + jumlah terlambat. */
+  function taskStatus(tasks) {
+    var out = { TODO: 0, IN_PROGRESS: 0, REVIEW: 0, DONE: 0, overdue: 0, total: 0 };
+    tasks.forEach(function (t) {
+      if (t.status === 'CANCELLED' || !U.has(out, t.status)) return;
+      out[t.status]++; out.total++;
+      if (Repo.taskOverdue(t)) out.overdue++;
+    });
+    return out;
+  }
+
   return {
     projectProgress: function (project, tasks) {
       var b = { tasksByProject: {} };
@@ -2799,6 +2882,7 @@ var DashboardService = (function () {
         recentActivity: b.activities.map(function (a) { return Repo.activityDto(a, b); }).sort(Repo.byDayDesc).slice(0, 6),
         feedback: reviews.slice(0, 4),
         week: week(b, b.tasks, b.activities),
+        taskStatus: taskStatus(b.tasks),
         setup: {
           brandingDone: !!cfg.APP_LOGO_PRIMARY_ID || !!cfg.APP_LOGO_SECONDARY_ID,
           organizationSet: !!cfg.ORGANIZATION_NAME,
@@ -2846,7 +2930,8 @@ var DashboardService = (function () {
         recentEvidence: s.assets.map(function (a) { return Repo.assetDto(a, b, opts); })
           .sort(function (x, y) { return x.createdAt < y.createdAt ? 1 : -1; }).slice(0, 6),
         latestReport: reports[0] || null,
-        week: week(b, s.tasks, s.activities)
+        week: week(b, s.tasks, s.activities),
+        taskStatus: taskStatus(s.tasks)
       };
     },
 
