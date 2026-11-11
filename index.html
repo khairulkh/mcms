@@ -10,10 +10,7 @@
   <link rel="icon" href="assets/icon.svg" type="image/svg+xml">
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="apple-touch-icon" href="assets/icon.svg">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@600;700;800&display=swap">
-  <link rel="stylesheet" href="assets/app.css">
+  <link rel="stylesheet" href="assets/app.css?v=aa5677df">
 </head>
 <body>
   <a class="skip-link" href="#main">Langsung ke konten utama</a>
@@ -63,9 +60,9 @@
   <script>
     /* Memuat skrip berurutan. Skrip mode demo hanya dimuat bila DEMO_MODE = true. */
     (function () {
-      var v = '1.0.0';
-      var files = ['assets/app.js', 'assets/js/kit.js', 'assets/js/home.js', 'assets/js/work.js', 'assets/js/assets.js',
-        'assets/js/reports.js', 'assets/js/exec.js', 'assets/js/settings.js', 'assets/js/start.js'];
+      var v = 'aa5677df';  /* diisi otomatis oleh tools/build.js */
+      /* Satu file gabungan (cepat). Kode sumber per modul ada di assets/app.js & assets/js/. */
+      var files = ['assets/mcms.js'];
       if (window.MCMS_CONFIG && window.MCMS_CONFIG.DEMO_MODE) {
         files = ['assets/demo/gas-sim.js', 'assets/demo/backend.bundle.js', 'assets/demo/demo-boot.js'].concat(files);
       }
