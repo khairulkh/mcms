@@ -160,6 +160,7 @@
         if (code === 'UNAUTHENTICATED' && action.indexOf('auth.') !== 0 && state.session) handleSessionExpired(err.message);
         throw err;
       }
+      noteWrite(action);
       return json.data;
     }, function (err) {
       // Coba ulang otomatis sekali untuk aksi baca saat jaringan bermasalah
@@ -167,6 +168,60 @@
         return new Promise(function (r) { setTimeout(r, 1200); }).then(function () { return api(action, payload, attempt + 1); });
       }
       throw err instanceof ApiError ? err : new ApiError('NETWORK', 'Tidak dapat terhubung ke server.');
+    });
+  }
+
+  /* ---------------- Cache tampilan: tampil langsung dari data terakhir, lalu diperbarui diam-diam ----------------
+     Data terakhir setiap halaman disimpan di browser (per akun). Saat halaman dibuka, data itu langsung tampil
+     (tanpa menunggu Apps Script), sementara data terbaru diambil di latar belakang dan menggantikannya. */
+  var CACHE_PREFIX = 'mcms.c.';
+  var READ_RE = /^(dashboard\.|exec\.)|\.(list|get|thumbs|preview|all|global|getPublic|me|system|ping)$/;
+  var CACHEABLE_RE = /^(dashboard\.(owner|executive)|exec\.(projects|project|activity|assets|reports)|(projects|tasks|activities|assets|reports|reviews|requests|categories|users)\.list|projects\.get|lookup\.all|settings\.system|requests\.get)$/;
+  var lastWriteAt = Number(store.get('mcms.cw') || 0);
+  function cacheKey(action, payload) { return CACHE_PREFIX + (state.me ? state.me.userId : '_') + '|' + action + '|' + JSON.stringify(payload || {}); }
+  function cacheGet(k) { try { var raw = localStorage.getItem(k); return raw ? JSON.parse(raw) : null; } catch (e) { return null; } }
+  function cacheClear() {
+    try { Object.keys(localStorage).forEach(function (k) { if (k.indexOf(CACHE_PREFIX) === 0) localStorage.removeItem(k); }); } catch (e) { /* abaikan */ }
+  }
+  function cachePut(k, data) {
+    var str;
+    try { str = JSON.stringify({ t: Date.now(), d: data }); } catch (e) { return; }
+    if (str.length > 400000) return;
+    try { localStorage.setItem(k, str); } catch (e) { cacheClear(); try { localStorage.setItem(k, str); } catch (e2) { /* penyimpanan penuh */ } }
+  }
+  function stable(d) { return JSON.stringify(d, function (k, v) { return k === 'generatedAt' ? undefined : v; }); }
+  function noteWrite(action) {
+    if (READ_RE.test(action) || action.indexOf('auth.') === 0) return;
+    lastWriteAt = Date.now();
+    store.set('mcms.cw', lastWriteAt);
+  }
+  /**
+   * load(action, payload, render, onError, opts)
+   * render(data, fromCache) bisa dipanggil dua kali: dari cache (instan) lalu dari server (jika berbeda).
+   * opts.skeleton: dipanggil bila belum ada data sama sekali.
+   */
+  function load(action, payload, render, onError, opts) {
+    opts = opts || {};
+    var key = cacheKey(action, payload);
+    var cacheable = CACHEABLE_RE.test(action) && !(payload && payload.q); // hasil pencarian tidak disimpan
+    var view = location.hash;
+    var sameView = state.lastView === view;
+    var c = cacheable ? cacheGet(key) : null;
+    var shown = '';
+    // Setelah menyimpan perubahan di halaman yang sama, jangan tampilkan data lama sesaat.
+    if (c && !(sameView && c.t < lastWriteAt)) {
+      shown = stable(c.d);
+      try { render(c.d, true); } catch (e) { shown = ''; }
+    } else if (opts.skeleton && !sameView) opts.skeleton();
+    return api(action, payload).then(function (d) {
+      if (cacheable) cachePut(key, d);
+      if (location.hash !== view || !state.me) return;
+      state.lastView = view;
+      if (stable(d) !== shown) render(d, false);
+    }, function (err) {
+      if (location.hash !== view || !state.me) return;
+      if (shown && (err.code === 'NETWORK' || err.code === 'TIMEOUT')) { toast('Offline: menampilkan data tersimpan terakhir.', 'error'); return; }
+      if (onError) onError(err);
     });
   }
 
@@ -277,6 +332,7 @@
 
   function applyBranding(b) {
     state.branding = b;
+    if (b && b.appName) store.set('mcms.branding', b);
     document.title = (b && b.appName) ? b.appName : 'MCMS — Media Center Workspace';
     var brand = $('#brand');
     [brand, $('#brand-side')].forEach(function (el) {
@@ -285,6 +341,13 @@
   }
 
   function loadBranding() {
+    var cached = store.get('mcms.branding');
+    if (cached && cached.appName) {
+      // Logo & nama langsung tampil; versi terbaru diambil di latar belakang.
+      applyBranding(cached);
+      api('branding.getPublic').then(function (b) { if (stable(b) !== stable(cached)) applyBranding(b); }, function () {});
+      return Promise.resolve(cached);
+    }
     return api('branding.getPublic').then(function (b) { applyBranding(b); return b; }, function () {
       var fallback = { appName: 'MCMS — Media Center Workspace', tagline: 'Manage work. Build impact.', organizationName: '', logoMode: 'NONE' };
       applyBranding(fallback);
@@ -432,13 +495,15 @@
     $('#toast-root').innerHTML = '';
     state.session = res.session;
     state.me = res.me;
-    store.set(STORE_KEY, res.session);
+    store.set(STORE_KEY, Object.assign({}, res.session, { me: res.me }));
     var saved = store.get(modeKey());
     state.mode = res.me.modes.indexOf(saved) >= 0 ? saved : res.me.modes[0];
     enterApp();
   }
 
   function handleSessionExpired(message) {
+    if (!state.me && !state.session) return;
+    cacheClear();
     state.session = null; state.me = null;
     store.del(STORE_KEY);
     closeOverlay();
@@ -448,6 +513,7 @@
   function logout() {
     var done = function () {
       state.session = null; state.me = null; NAV_BADGE = {};
+      cacheClear(); state.lastView = '';
       $('#toast-root').innerHTML = '';
       store.del(STORE_KEY);
       if (!DEMO && window.google && window.google.accounts) window.google.accounts.id.disableAutoSelect();
@@ -476,6 +542,7 @@
     executive: [
       { group: 'Mode Atasan', items: [
         { id: 'exec', label: 'Ringkasan', icon: 'grid' },
+        { id: 'exec-requests', label: 'Permintaan', icon: 'send' },
         { id: 'exec-projects', label: 'Proyek', icon: 'folder' },
         { id: 'exec-activity', label: 'Aktivitas', icon: 'activity' },
         { id: 'exec-assets', label: 'Bukti Kerja', icon: 'image' },
@@ -486,9 +553,9 @@
   };
   var BOTTOM = {
     personal: ['overview', 'tasks', '__create', 'projects', '__more'],
-    executive: ['exec', 'exec-projects', 'exec-reports', 'exec-activity', '__more']
+    executive: ['exec', 'exec-requests', 'exec-projects', 'exec-reports', '__more']
   };
-  var SHORT = { overview: 'Beranda', tasks: 'Tugas', projects: 'Proyek', exec: 'Ringkasan', 'exec-projects': 'Proyek', 'exec-reports': 'Laporan', 'exec-activity': 'Aktivitas' };
+  var SHORT = { 'exec-requests': 'Permintaan', overview: 'Beranda', tasks: 'Tugas', projects: 'Proyek', exec: 'Ringkasan', 'exec-projects': 'Proyek', 'exec-reports': 'Laporan', 'exec-activity': 'Aktivitas' };
 
   function navItems(mode) {
     var out = [];
@@ -1177,8 +1244,30 @@
         return renderLogin();
       }
       state.session = saved;
-      api('auth.me').then(function (me) {
+      var refreshMe = function (me) {
+        var changed = !state.me || stable(me) !== stable(state.me);
         state.me = me;
+        store.set(STORE_KEY, Object.assign({}, saved, { me: me }));
+        return changed;
+      };
+      if (saved.me && saved.me.userId) {
+        // Jalur cepat: langsung masuk dengan data akun tersimpan, verifikasi sesi di latar belakang.
+        state.me = saved.me;
+        var m0 = store.get(modeKey());
+        state.mode = state.me.modes.indexOf(m0) >= 0 ? m0 : state.me.modes[0];
+        enterApp();
+        api('auth.me').then(function (me) {
+          if (refreshMe(me)) {
+            if (me.modes.indexOf(state.mode) < 0) switchMode(me.modes[0]);
+            else { renderNav(); renderUserMenu(); renderModeSwitch(); }
+          }
+        }, function (err) {
+          if (err.code === 'UNAUTHENTICATED' || err.code === 'FORBIDDEN') handleSessionExpired('Sesi berakhir. Silakan masuk kembali.');
+        });
+        return;
+      }
+      api('auth.me').then(function (me) {
+        refreshMe(me);
         var m = store.get(modeKey());
         state.mode = me.modes.indexOf(m) >= 0 ? m : me.modes[0];
         enterApp();
@@ -1207,7 +1296,7 @@
     CFG: CFG, DEMO: DEMO, state: state, PAGES: PAGES, store: store,
     $: $, $$: $$, esc: esc, icon: icon, safeImg: safeImg, safeHttps: safeHttps, initials: initials,
     fmtDate: fmtDate, fmtDateLong: fmtDateLong, greeting: greeting,
-    api: api, ApiError: ApiError, toast: toast, openOverlay: openOverlay, closeOverlay: closeOverlay,
+    api: api, load: load, cacheClear: cacheClear, ApiError: ApiError, toast: toast, openOverlay: openOverlay, closeOverlay: closeOverlay,
     confirmDialog: confirmDialog, setLoading: setLoading, focusHeading: focusHeading,
     statCard: statCard, emptyState: emptyState, errorState: errorState, skeletonPage: skeletonPage,
     statusBadge: statusBadge, progressRow: progressRow, STATUS_LABEL: STATUS_LABEL,

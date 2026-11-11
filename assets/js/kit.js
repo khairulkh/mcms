@@ -239,36 +239,107 @@
   var FT_LABEL = { IMAGE: 'Foto/gambar', VIDEO: 'Video', AUDIO: 'Audio', DOCUMENT: 'Dokumen', DESIGN: 'Desain', OTHER: 'Lainnya' };
   MC.FT_LABEL = FT_LABEL;
   MC.fileIcon = function (t) { return icon(FT_ICON[t] || 'file'); };
-  var thumbCache = {};
-  /** Muat thumbnail untuk elemen [data-thumb] di dalam root, 12 per panggilan. */
+  /* Thumbnail: cache permanen di browser (maks ±200 file, ±3 MB). Thumbnail tidak berubah, jadi cukup diunduh sekali. */
+  var TPRE = 'mcms.t.', TIDX = 'mcms.t.idx', TMAX = 200;
+  var memThumb = {};
+  function tGet(id) {
+    if (Object.prototype.hasOwnProperty.call(memThumb, id)) return memThumb[id];
+    try { var v = localStorage.getItem(TPRE + id); if (v !== null) { memThumb[id] = v; return v; } } catch (e) { /* abaikan */ }
+    return undefined;
+  }
+  function tPut(id, url) {
+    memThumb[id] = url;
+    if (!url) return; // kosong: hanya diingat selama sesi ini (thumbnail Drive mungkin belum siap)
+    try {
+      var idx = JSON.parse(localStorage.getItem(TIDX) || '[]').filter(function (x) { return x !== id; });
+      idx.push(id);
+      while (idx.length > TMAX) localStorage.removeItem(TPRE + idx.shift());
+      localStorage.setItem(TPRE + id, url);
+      localStorage.setItem(TIDX, JSON.stringify(idx));
+    } catch (e) {
+      try { JSON.parse(localStorage.getItem(TIDX) || '[]').slice(0, 60).forEach(function (x) { localStorage.removeItem(TPRE + x); }); } catch (e2) { /* abaikan */ }
+    }
+  }
+  MC.thumbPut = tPut;
+  /** Muat thumbnail untuk elemen [data-thumb] di dalam root: dari cache browser dulu, sisanya 24 per panggilan. */
   MC.loadThumbs = function (root) {
     var els = $$('[data-thumb]:not([data-thumb-done])', root);
     var need = [];
-    els.forEach(function (el) {
-      var id = el.getAttribute('data-thumb');
-      if (Object.prototype.hasOwnProperty.call(thumbCache, id)) apply(el, thumbCache[id]);
-      else if (need.indexOf(id) < 0) need.push(id);
-    });
     function apply(el, url) {
       el.setAttribute('data-thumb-done', '1');
-      if (MC.safeImg(url) || /^data:image\/gif;base64,/.test(url)) {
-        el.innerHTML = '<img src="' + url + '" alt="" loading="lazy">';
+      if (MC.safeImg(url) || /^data:image\/(gif|webp);base64,/.test(url)) {
+        el.innerHTML = '<img src="' + url + '" alt="" loading="lazy" decoding="async">';
         el.classList.add('has-img');
       }
     }
-    for (var i = 0; i < need.length; i += 12) {
+    els.forEach(function (el) {
+      var id = el.getAttribute('data-thumb');
+      if (!id) return;
+      var c = tGet(id);
+      if (c !== undefined) apply(el, c);
+      else if (need.indexOf(id) < 0) need.push(id);
+    });
+    for (var i = 0; i < need.length; i += 24) {
       (function (ids) {
         MC.api('assets.thumbs', { ids: ids }).then(function (map) {
-          ids.forEach(function (id) { thumbCache[id] = map[id] || ''; });
+          ids.forEach(function (id) { tPut(id, map[id] || ''); });
           $$('[data-thumb]:not([data-thumb-done])', root).forEach(function (el) {
-            var id = el.getAttribute('data-thumb');
-            if (Object.prototype.hasOwnProperty.call(thumbCache, id)) apply(el, thumbCache[id]);
+            var c = tGet(el.getAttribute('data-thumb'));
+            if (c !== undefined) apply(el, c);
           });
         }, function () { /* thumbnail opsional */ });
-      })(need.slice(i, i + 12));
+      })(need.slice(i, i + 24));
     }
   };
-  MC.forgetThumb = function (id) { delete thumbCache[id]; };
+  /**
+   * Membuat thumbnail sangat kecil di browser sebelum unggah (foto & video).
+   * Hasil: WebP (atau JPEG di browser lama) maks 360 px, ±8–30 KB. Mengembalikan {data, mime} atau null.
+   */
+  MC.makeThumb = function (file) {
+    var isImg = /^image\/(png|jpeg|webp|gif|bmp)$/.test(file.type), isVid = /^video\//.test(file.type);
+    if (!isImg && !isVid) return Promise.resolve(null);
+    function encode(src, w, h) {
+      return new Promise(function (resolve) {
+        var tries = [[360, 0.6], [260, 0.5]], t = 0;
+        (function step() {
+          var max = tries[t][0], q = tries[t][1];
+          var sc = Math.min(1, max / Math.max(w, h));
+          var cv = document.createElement('canvas');
+          cv.width = Math.max(1, Math.round(w * sc)); cv.height = Math.max(1, Math.round(h * sc));
+          var g = cv.getContext('2d');
+          g.fillStyle = '#fff'; g.fillRect(0, 0, cv.width, cv.height);
+          g.drawImage(src, 0, 0, cv.width, cv.height);
+          var url = cv.toDataURL('image/webp', q);
+          var mime = 'image/webp';
+          if (url.indexOf('data:image/webp') !== 0) { url = cv.toDataURL('image/jpeg', q); mime = 'image/jpeg'; }
+          var data = url.split(',')[1] || '';
+          if (data.length > 80000 && ++t < tries.length) return step();
+          resolve(data && data.length <= 88000 ? { data: data, mime: mime } : null);
+        })();
+      });
+    }
+    return new Promise(function (resolve) {
+      var url = URL.createObjectURL(file);
+      var done = function (v) { URL.revokeObjectURL(url); resolve(v); };
+      var timer = setTimeout(function () { done(null); }, 6000);
+      try {
+        if (isImg) {
+          var img = new Image();
+          img.onload = function () { encode(img, img.naturalWidth, img.naturalHeight).then(function (v) { clearTimeout(timer); done(v); }); };
+          img.onerror = function () { clearTimeout(timer); done(null); };
+          img.src = url;
+        } else {
+          var v = document.createElement('video');
+          v.muted = true; v.playsInline = true; v.preload = 'auto';
+          v.onloadeddata = function () { try { v.currentTime = Math.min(1, (v.duration || 2) / 3); } catch (e) { clearTimeout(timer); done(null); } };
+          v.onseeked = function () { encode(v, v.videoWidth, v.videoHeight).then(function (r) { clearTimeout(timer); done(r); }); };
+          v.onerror = function () { clearTimeout(timer); done(null); };
+          v.src = url;
+        }
+      } catch (e) { clearTimeout(timer); done(null); }
+    });
+  };
+  MC.forgetThumb = function (id) { delete memThumb[id]; try { localStorage.removeItem(TPRE + id); } catch (e) { /* abaikan */ } };
 
   /** Buka file asli di Google Drive (atasan diberi akses saat itu juga). */
   MC.openAsset = function (assetId, btn) {
@@ -292,14 +363,83 @@
   MC.assetCard = function (a, opts) {
     opts = opts || {};
     return '<article class="asset-card">' +
-      '<button class="asset-thumb" type="button" data-asset-open="' + esc(a.assetId) + '" aria-label="Lihat ' + esc(a.fileName) + '" data-thumb="' + (a.fileType === 'IMAGE' ? esc(a.assetId) : '') + '">' +
-      '<span class="ft-ico">' + MC.fileIcon(a.fileType) + '</span></button>' +
+      '<div class="asset-thumb-wrap"><button class="asset-thumb" type="button" data-asset-open="' + esc(a.assetId) + '" aria-label="Lihat detail ' + esc(a.fileName) + '" data-thumb="' + (a.fileType === 'IMAGE' || a.fileType === 'VIDEO' || a.fileType === 'DESIGN' ? esc(a.assetId) : '') + '">' +
+      '<span class="ft-ico">' + MC.fileIcon(a.fileType) + '</span>' + (a.fileType === 'VIDEO' ? '<span class="play-badge" aria-hidden="true">' + icon('play') + '</span>' : '') + '</button>' +
+      MC.driveButton(a, 'asset-drive') + '</div>' +
       '<div class="asset-info"><div class="asset-name" title="' + esc(a.fileName) + '">' + esc(a.fileName) + '</div>' +
       '<div class="asset-meta">' + esc(FT_LABEL[a.fileType] || 'File') + (a.sizeBytes ? ' · ' + MC.fmtSize(a.sizeBytes) : '') + (a.source === 'LINK' ? ' · ' + icon('link', 'width="12" height="12"') + 'Drive' : '') + '</div>' +
       (a.projectName ? '<div class="asset-meta">' + icon('folder', 'width="12" height="12"') + esc(a.projectName) + '</div>' : '') +
       (opts.exec ? '' : '<div class="asset-badges">' + MC.visBadge(a.visibility) + (a.stage === 'FINAL' ? '<span class="badge badge-success">' + icon('star') + 'Final</span>' : '') + '</div>') +
       '</div></article>';
   };
+  /** Tombol "buka file asli di Google Drive". Pemilik: tautan langsung (tanpa menunggu server). Atasan: akses diberikan saat diklik. */
+  MC.driveButton = function (a, cls, withText) {
+    var label = 'Buka file asli di Google Drive: ' + a.fileName;
+    var inner = icon('external') + (withText ? 'Buka di Google Drive' : '');
+    if (!MC.DEMO && MC.safeHttps(a.driveUrl)) {
+      return '<a class="' + cls + '" href="' + esc(a.driveUrl) + '" target="_blank" rel="noopener" aria-label="' + esc(label) + '"' + (withText ? '' : ' title="Buka di Google Drive"') + '>' + inner + '</a>';
+    }
+    return '<button class="' + cls + '" type="button" data-asset-drive="' + esc(a.assetId) + '" aria-label="' + esc(label) + '"' + (withText ? '' : ' title="Buka di Google Drive"') + '>' + inner + '</button>';
+  };
+
+  /* ---------- Tabel proyek dengan urutan (sort) ---------- */
+  var P_STATUS_ORDER = ['IN_PROGRESS', 'PLANNING', 'ON_HOLD', 'DONE', 'ARCHIVED'];
+  var P_PRIO_ORDER = ['URGENT', 'HIGH', 'MEDIUM', 'LOW'];
+  var P_COLS = [
+    ['name', 'Proyek'], ['status', 'Status'], ['priority', 'Prioritas'], ['progress', 'Progres'],
+    ['tasks', 'Tugas'], ['dueDate', 'Deadline'], ['updatedAt', 'Diperbarui']
+  ];
+  function pVal(p, k) {
+    if (k === 'name') return String(p.name).toLowerCase();
+    if (k === 'status') return P_STATUS_ORDER.indexOf(p.status);
+    if (k === 'priority') return P_PRIO_ORDER.indexOf(p.priority);
+    if (k === 'progress') return p.progress === null ? -1 : p.progress;
+    if (k === 'tasks') return p.taskCount;
+    if (k === 'dueDate') return p.dueDate || '9999-99-99';
+    return p[k] || '';
+  }
+  MC.sortProjects = function (items, sort) {
+    var dir = sort.dir === 'desc' ? -1 : 1;
+    return items.slice().sort(function (a, b) {
+      var x = pVal(a, sort.key), y = pVal(b, sort.key);
+      if (x < y) return -dir; if (x > y) return dir;
+      return String(a.name).localeCompare(String(b.name));
+    });
+  };
+  MC.projectTable = function (items, base, sort, opts) {
+    opts = opts || {};
+    var rows = MC.sortProjects(items, sort);
+    return '<div class="table-wrap card" role="region" aria-label="Tabel proyek" tabindex="0"><table class="data-table"><caption class="sr-only">Daftar proyek, diurutkan berdasarkan ' +
+      esc(P_COLS.filter(function (c) { return c[0] === sort.key; })[0][1]) + (sort.dir === 'desc' ? ' menurun' : ' menaik') + '</caption><thead><tr>' +
+      P_COLS.map(function (c) {
+        var on = sort.key === c[0];
+        return '<th scope="col" aria-sort="' + (on ? (sort.dir === 'desc' ? 'descending' : 'ascending') : 'none') + '"><button type="button" class="th-sort" data-sort="' + c[0] + '">' + esc(c[1]) +
+          '<span class="sort-ico' + (on ? ' on' : '') + '" aria-hidden="true">' + (on ? (sort.dir === 'desc' ? '↓' : '↑') : '↕') + '</span></button></th>';
+      }).join('') + (opts.owner ? '<th scope="col">Visibilitas</th>' : '') + '</tr></thead><tbody>' +
+      (rows.length ? rows.map(function (p) {
+        var due = MC.dueLabel(p.dueDate, p.status === 'DONE' || p.status === 'ARCHIVED');
+        return '<tr><th scope="row"><a class="tbl-name" href="' + base + encodeURIComponent(p.projectId) + '">' + esc(p.name) + '</a><span class="tbl-sub">' + esc(p.projectId) + (p.category ? ' · ' + esc(p.category.name) : '') + '</span></th>' +
+          '<td>' + MC.statusBadge(p.status) + '</td><td>' + (MC.priorityBadge(p.priority) || '<span class="hint">' + esc((MC.PRIORITIES.filter(function (x) { return x[0] === p.priority; })[0] || ['', '—'])[1]) + '</span>') + '</td>' +
+          '<td class="tbl-prog">' + (p.progress === null ? '<span class="hint">—</span>' : '<div class="progress thin" aria-hidden="true"><span style="width:' + p.progress + '%"></span></div><span class="num">' + p.progress + '%</span>') + '</td>' +
+          '<td class="num">' + p.taskDone + '/' + p.taskCount + '</td>' +
+          '<td><span class="nowrap">' + esc(p.dueDate ? MC.fmtDay(p.dueDate) : '—') + '</span>' + (due && p.dueDate && due.tone !== 'neutral' ? '<br>' + MC.dueChip(p.dueDate, p.status === 'DONE') : '') + '</td>' +
+          '<td class="nowrap hint">' + esc(MC.fmtDate(p.updatedAt)) + '</td>' +
+          (opts.owner ? '<td>' + MC.visBadge(p.visibility) + '</td>' : '') + '</tr>';
+      }).join('') : '<tr><td colspan="' + (P_COLS.length + (opts.owner ? 1 : 0)) + '" class="hint" style="text-align:center;padding:28px">Tidak ada proyek.</td></tr>') +
+      '</tbody></table></div>';
+  };
+  MC.bindProjectTable = function (root, sort, redraw) {
+    $$('[data-sort]', root).forEach(function (b) {
+      b.addEventListener('click', function () {
+        var k = b.getAttribute('data-sort');
+        if (sort.key === k) sort.dir = sort.dir === 'asc' ? 'desc' : 'asc';
+        else { sort.key = k; sort.dir = (k === 'updatedAt' || k === 'progress') ? 'desc' : 'asc'; }
+        redraw();
+        var nb = $('[data-sort="' + k + '"]', root); if (nb) nb.focus();
+      });
+    });
+  };
+
   MC.assetGrid = function (items, opts) {
     return '<div class="asset-grid">' + items.map(function (a) { return MC.assetCard(a, opts); }).join('') + '</div>';
   };
@@ -353,7 +493,7 @@
       (opts.readonly ? '<span class="tr-check ro" aria-hidden="true">' + (done ? icon('check') : '') + '</span>' :
         '<button class="tr-check" type="button" data-done="' + esc(t.taskId) + '" aria-pressed="' + done + '" aria-label="' + (done ? 'Tandai belum selesai: ' : 'Tandai selesai: ') + esc(t.title) + '">' + (done ? icon('check') : '') + '</button>') +
       '<' + (opts.readonly ? 'div' : 'button type="button" data-task="' + esc(t.taskId) + '"') + ' class="tr-main"><span class="tr-title">' + esc(t.title) + '</span>' +
-      '<span class="tr-meta">' + (t.standalone ? '<span class="badge badge-neutral">Mandiri</span>' : (t.projectName ? '<span class="tr-proj">' + icon('folder', 'width="12" height="12"') + esc(t.projectName) + '</span>' : '')) +
+      '<span class="tr-meta">' + (t.fromSupervisor ? '<span class="badge badge-req">' + icon('send') + 'Dari atasan</span>' : '') + (t.standalone ? '<span class="badge badge-neutral">Mandiri</span>' : (t.projectName ? '<span class="tr-proj">' + icon('folder', 'width="12" height="12"') + esc(t.projectName) + '</span>' : '')) +
       MC.dueChip(t.dueDate, done) + (t.blockerNote && !done ? '<span class="due due-warning">' + icon('alert', 'width="13" height="13"') + 'Ada kendala</span>' : '') +
       (t.evidenceCount ? '<span class="tr-ev">' + icon('image', 'width="13" height="13"') + t.evidenceCount + '</span>' : '') + '</span></' + (opts.readonly ? 'div' : 'button') + '>' +
       '<span class="tr-side">' + MC.priorityBadge(t.priority) + MC.statusBadge(t.status) + '</span></li>';
@@ -404,6 +544,7 @@
   MC.refreshFeedbackBadge = function () {
     if (!MC.state.me || MC.state.me.role !== 'OWNER') return;
     MC.api('reviews.list', {}).then(function (r) { MC.setNavBadge('feedback', r.open); }, function () {});
+    MC.api('requests.list', {}).then(function (l) { MC.setNavBadge('tasks', l.filter(function (t) { return t.status === 'TODO'; }).length); }, function () {});
   };
 
   /** Pilihan proyek untuk <select>. */

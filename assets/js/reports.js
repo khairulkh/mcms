@@ -93,7 +93,7 @@
       }, function (er) { MC.setLoading(btn, false); MC.formAlert(form, er.message); });
     });
     function loadList() {
-      MC.api('reports.list').then(function (items) {
+      MC.load('reports.list', {}, function (items) {
         if (!MC.stillOn('reports')) return;
         $('#rep-list').innerHTML = items.length ? reportList(items, '#/reports/') : '<div class="card-pad">' + MC.emptyState('report', 'Belum ada laporan', 'Buat laporan mingguan pertama dari formulir di samping.') + '</div>';
       }, function (er) { MC.errorState($('#rep-list'), er, loadList); });
@@ -177,7 +177,7 @@
     if (sub) return execReportView(main, sub);
     main.innerHTML = '<div class="page">' + MC.pageHead('Mode Atasan', 'Laporan', 'Laporan periodik yang sudah diterbitkan.') + '<section class="card"><div class="card-body flush" id="er-list">' + MC.loadingBox(160) + '</div></section></div>';
     function load() {
-      MC.api('exec.reports').then(function (items) {
+      MC.load('exec.reports', {}, function (items) {
         if (!MC.stillOn('exec-reports')) return;
         $('#er-list').innerHTML = items.length ? reportList(items, '#/exec-reports/') : '<div class="card-pad">' + MC.emptyState('report', 'Belum ada laporan terbit', 'Laporan yang diterbitkan pemilik akan muncul di sini.') + '</div>';
       }, function (e) { MC.errorState($('#er-list'), e, load); });

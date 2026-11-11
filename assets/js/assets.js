@@ -98,8 +98,14 @@
         queue.forEach(function (x) {
           chain = chain.then(function () {
             x.state = 'uploading'; drawList();
-            return MC.fileToBase64(x.file).then(function (b64) {
-              return MC.api('assets.upload', Object.assign({ fileName: x.file.name, mimeType: x.file.type || 'application/octet-stream', dataBase64: b64 }, base));
+            // Thumbnail kecil dibuat di browser → pratinjau ringan tanpa memuat file asli
+            return Promise.all([MC.fileToBase64(x.file), MC.makeThumb(x.file)]).then(function (r) {
+              var th = r[1];
+              return MC.api('assets.upload', Object.assign({ fileName: x.file.name, mimeType: x.file.type || 'application/octet-stream', dataBase64: r[0],
+                thumbBase64: th ? th.data : '', thumbMime: th ? th.mime : '' }, base)).then(function (a) {
+                if (th) MC.thumbPut(a.assetId, 'data:' + th.mime + ';base64,' + th.data);
+                return a;
+              });
             }).then(function () { x.state = 'done'; ok++; drawList(); }, function (e) { x.state = 'error'; x.err = e.message; failed++; drawList(); });
           });
         });
@@ -120,6 +126,9 @@
     $$('[data-asset-open]', root).forEach(function (b) {
       b.addEventListener('click', function () { assetDialog(b.getAttribute('data-asset-open'), exec); });
     });
+    $$('[data-asset-drive]', root).forEach(function (b) {
+      b.addEventListener('click', function (e) { e.stopPropagation(); MC.openAsset(b.getAttribute('data-asset-drive'), b); });
+    });
   };
   function assetDialog(id, exec) {
     var a = registry[id];
@@ -128,7 +137,7 @@
     var ov = MC.openOverlay('<div class="dialog-head"><span class="ico ic tone-primary-ico">' + MC.fileIcon(a.fileType) + '</span><div class="grow"><h2 id="dlg-title" class="break">' + esc(a.fileName) + '</h2>' +
       '<p class="hint">' + esc(MC.FT_LABEL[a.fileType] || 'File') + (a.sizeBytes ? ' · ' + MC.fmtSize(a.sizeBytes) : '') + ' · ' + esc(MC.fmtDate(a.createdAt, true)) + '</p></div>' +
       '<button class="icon-btn" type="button" data-close aria-label="Tutup">' + icon('x') + '</button></div>' +
-      '<div class="dialog-body"><div class="preview-big" data-thumb="' + (a.fileType === 'IMAGE' ? esc(a.assetId) : '') + '"><span class="ft-ico">' + MC.fileIcon(a.fileType) + '</span></div>' +
+      '<div class="dialog-body"><div class="preview-big" data-thumb="' + (a.fileType === 'IMAGE' || a.fileType === 'VIDEO' || a.fileType === 'DESIGN' ? esc(a.assetId) : '') + '"><span class="ft-ico">' + MC.fileIcon(a.fileType) + '</span></div>' +
       '<dl class="kv"><dt>Jenis</dt><dd>' + esc(STAGE_LABEL[a.stage] || a.stage) + '</dd>' +
       (a.projectName ? '<dt>Proyek</dt><dd>' + esc(a.projectName) + '</dd>' : '') +
       (a.links.filter(function (l) { return l.entityType === 'TASK'; }).map(function (l) { return '<dt>Tugas</dt><dd>' + esc(l.title) + '</dd>'; }).join('')) +
@@ -139,10 +148,10 @@
         '<span class="switch-text"><span class="t">Bisa dilihat atasan</span><span class="hint">Mematikan ini juga mencabut akses atasan ke file di Drive.</span></span></label></div>' : '') +
       '</div><div class="dialog-foot">' +
       (owner ? '<button class="btn btn-danger" type="button" id="av-del">' + icon('trash') + 'Hapus dari arsip</button><span class="grow"></span>' : '') +
-      '<button class="btn btn-primary" type="button" id="av-open">' + icon('external') + 'Buka di Google Drive</button></div>', { wide: true });
+      MC.driveButton(owner ? a : { assetId: a.assetId, fileName: a.fileName }, 'btn btn-primary', true) + '</div>', { wide: true });
     $('[data-close]', ov).addEventListener('click', MC.closeOverlay);
     MC.loadThumbs(ov);
-    $('#av-open').addEventListener('click', function (e) { MC.openAsset(a.assetId, e.currentTarget); });
+    MC.bindAssetOpen(ov, true);
     if (!owner) return;
     $('#av-share').addEventListener('change', function (e) {
       var on = e.target.checked;
@@ -185,7 +194,7 @@
     $('#as-proj').addEventListener('change', function (e) { AS.project = e.target.value; load(); });
     var deb; $('#as-q').addEventListener('input', function () { clearTimeout(deb); deb = setTimeout(function () { if ($('#as-q')) load(); }, 250); });
     function load() {
-      MC.api('assets.list', { fileType: AS.type, visibility: AS.vis, projectId: AS.project, q: $('#as-q').value }).then(function (d) {
+      MC.load('assets.list', { fileType: AS.type, visibility: AS.vis, projectId: AS.project, q: $('#as-q').value }, function (d) {
         if (!MC.stillOn('assets')) return;
         var body = $('#as-body');
         body.innerHTML = '<div class="summary-strip"><div><span class="v num">' + d.items.length + '</span><span class="l">file</span></div>' +
@@ -211,7 +220,7 @@
     MC.bindSegmented(main, 'eft', function (v) { EX.type = v; load(); });
     var deb; $('#ea-q').addEventListener('input', function () { clearTimeout(deb); deb = setTimeout(function () { if ($('#ea-q')) load(); }, 250); });
     function load() {
-      MC.api('exec.assets', { fileType: EX.type, q: $('#ea-q').value }).then(function (d) {
+      MC.load('exec.assets', { fileType: EX.type, q: $('#ea-q').value }, function (d) {
         if (!MC.stillOn('exec-assets')) return;
         var body = $('#ea-body');
         body.innerHTML = d.items.length ? MC.assetGrid(d.items, { exec: true }) : '<div class="card card-pad">' + MC.emptyState('image', 'Belum ada bukti kerja', 'File yang dibagikan pemilik akan tampil di sini.') + '</div>';

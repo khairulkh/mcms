@@ -29,6 +29,9 @@
   function reminder(d) {
     var dow = new Date().getDay();
     var today = d.week && d.week.length ? d.week[d.week.length - 1] : null;
+    if (d.stats.requestsNew) {
+      return MC.reminderCard({ icon: 'send', eyebrow: 'Dari atasan', title: d.stats.requestsNew + ' permintaan perlu ditanggapi', sub: 'Permintaan baru atau komentar atasan yang belum dibalas.', button: 'Lihat permintaan', action: 'data-go="#/tasks/requests"' });
+    }
     if (dow === 5 || dow === 6 || dow === 0) {
       return MC.reminderCard({ icon: 'report', title: 'Buat laporan mingguan', sub: 'Rangkum pekerjaan minggu ini dan terbitkan untuk atasan.', button: 'Buat laporan', action: 'data-create="report"' });
     }
@@ -42,11 +45,12 @@
   }
 
   MC.PAGES.overview = function (main) {
-    MC.skeletonPage(main);
-    MC.api('dashboard.owner').then(function (d) {
+    if (MC.state.lastView !== location.hash) MC.skeletonPage(main);
+    MC.load('dashboard.owner', {}, function (d) {
       if (!MC.stillOn('overview')) return;
       var s = d.stats, st = d.setup, me = MC.state.me;
       MC.setNavBadge('feedback', s.feedbackOpen);
+      MC.setNavBadge('tasks', s.requestsNew);
       var steps = [
         { done: st.firstProject, t: 'Buat proyek pertama', href: '#/projects', act: 'project' },
         { done: st.brandingDone, t: 'Pasang logo Media Center / sekolah', href: '#/settings/branding' },
@@ -115,8 +119,8 @@
 
   /* ---------------- Mode Atasan ---------------- */
   MC.PAGES.exec = function (main) {
-    MC.skeletonPage(main);
-    MC.api('dashboard.executive').then(function (d) {
+    if (MC.state.lastView !== location.hash) MC.skeletonPage(main);
+    MC.load('dashboard.executive', {}, function (d) {
       if (!MC.stillOn('exec')) return;
       var b = MC.state.branding || {}, s = d.stats;
       var isOwner = MC.state.me.role === 'OWNER';

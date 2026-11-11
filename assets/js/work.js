@@ -172,12 +172,14 @@
     }
     function render(d) {
       var t = d.task;
+      var results = d.assets.filter(function (a) { return a.stage !== 'REFERENCE'; });
       var body = $('#td-body');
       if (!body) return;
       body.innerHTML =
         '<div class="td-title"><h3>' + esc(t.title) + '</h3><div class="td-badges">' + MC.statusBadge(t.status) + MC.priorityBadge(t.priority) + MC.visBadge(t.visibility) +
         (t.standalone ? '<span class="badge badge-neutral">Mandiri</span>' : '') + '</div>' +
         (t.projectName ? '<a class="td-proj" href="#/projects/' + encodeURIComponent(t.projectId) + '">' + icon('folder', 'width="14" height="14"') + esc(t.projectName) + '</a>' : '') + '</div>' +
+        (t.fromSupervisor ? requestBox(t, d) : '') +
         '<div class="td-section"><span class="label" id="st-lbl">Status</span>' +
         MC.segmented('st', [['TODO', 'Belum'], ['IN_PROGRESS', 'Dikerjakan'], ['REVIEW', 'Review'], ['DONE', 'Selesai']], t.status, 'Ubah status tugas') + '</div>' +
         '<div class="td-section"><label class="label" for="td-prog">Progres</label><div class="range-row"><input type="range" id="td-prog" min="0" max="100" step="5" value="' + t.progress + '"' + (t.status === 'DONE' ? ' disabled' : '') + '><output class="num" for="td-prog">' + t.progress + '%</output></div>' +
@@ -195,9 +197,19 @@
         '<button class="btn btn-secondary" type="button" id="td-up">' + icon('upload') + 'Unggah bukti</button>' +
         '<button class="btn btn-secondary" type="button" id="td-edit">' + icon('edit') + 'Ubah</button>' +
         '<button class="btn btn-danger" type="button" id="td-del">' + icon('trash') + 'Hapus</button></div>' +
-        '<div class="td-section"><h4>Bukti kerja (' + d.assets.length + ')</h4>' + (d.assets.length ? MC.assetGrid(d.assets) : '<p class="hint">Belum ada file. Unggah hasil kerja agar bisa dilihat atasan & masuk portofolio.</p>') + '</div>' +
+        '<div class="td-section"><h4>Bukti kerja (' + results.length + ')</h4>' + (results.length ? MC.assetGrid(results) : '<p class="hint">Belum ada file. Unggah hasil kerja agar bisa dilihat atasan & masuk portofolio.</p>') + '</div>' +
         '<div class="td-section"><h4>Aktivitas (' + d.activities.length + ')</h4>' + (d.activities.length ? '<ul class="act-list">' + d.activities.map(function (a) { return MC.activityRow(a, { showDate: true }); }).join('') + '</ul>' : '<p class="hint">Belum ada aktivitas untuk tugas ini.</p>') + '</div>';
 
+      var cf = $('#rq-form');
+      if (cf) cf.addEventListener('submit', function (e) {
+        e.preventDefault();
+        var inp = $('#rq-comment'), txt = inp.value.trim();
+        if (txt.length < 2) { MC.toast('Tulis komentar minimal 2 karakter.', 'error'); inp.focus(); return; }
+        var btn = $('button[type=submit]', cf);
+        MC.setLoading(btn, true);
+        MC.api('requests.comment', { taskId: t.taskId, comment: txt }).then(function () { changed = true; MC.toast('Balasan terkirim ke atasan.'); load(); },
+          function (er) { MC.setLoading(btn, false); MC.toast(er.message, 'error'); });
+      });
       MC.bindSegmented(body, 'st', function (v) { update({ status: v }, v === 'DONE' ? 'Tugas selesai. Kerja bagus!' : 'Status diperbarui.'); });
       var r = $('#td-prog'), out = r.nextElementSibling, deb;
       r.addEventListener('input', function () { out.textContent = r.value + '%'; });
@@ -222,20 +234,44 @@
     load();
   };
 
+  /** Kotak permintaan atasan di panel tugas: brief, tautan, file referensi, diskusi. */
+  function requestBox(t, d) {
+    var refs = d.assets.filter(function (a) { return a.stage === 'REFERENCE'; });
+    return '<section class="req-box" aria-label="Permintaan dari atasan"><div class="req-head">' + icon('send') + '<div><strong>Permintaan dari ' + esc(t.requestedBy) + '</strong>' +
+      '<span class="hint">' + esc(MC.fmtDate(t.requestedAt, true)) + '</span></div></div>' +
+      (t.referenceLinks.length ? '<div class="req-sec"><span class="label">Tautan referensi</span><ul class="link-list">' + t.referenceLinks.map(function (u) {
+        return '<li><a href="' + esc(u) + '" target="_blank" rel="noopener noreferrer">' + icon('link', 'width="14" height="14"') + '<span>' + esc(u.replace(/^https?:\/\/(www\.)?/, '')) + '</span></a></li>';
+      }).join('') + '</ul></div>' : '') +
+      (refs.length ? '<div class="req-sec"><span class="label">File referensi (' + refs.length + ')</span>' + MC.assetGrid(refs) + '</div>' : '') +
+      '<div class="req-sec"><span class="label">Diskusi dengan atasan</span>' +
+      ((d.comments || []).length ? '<ul class="chat">' + d.comments.map(function (c) {
+        var mine = MC.state.me && c.reviewerName === MC.state.me.displayName;
+        return '<li class="bubble' + (mine ? ' me' : '') + '"><div class="b-meta"><strong>' + esc(c.reviewerName) + '</strong> · ' + esc(MC.fmtDate(c.createdAt, true)) + '</div><p>' + MC.multiline(c.comment) + '</p></li>';
+      }).join('') + '</ul>' : '<p class="hint">Belum ada komentar.</p>') +
+      '<form class="inline-form" id="rq-form" novalidate><label class="sr-only" for="rq-comment">Balas atasan</label>' +
+      '<input class="input" id="rq-comment" maxlength="2000" placeholder="Balas atau tanyakan detail ke atasan…" autocomplete="off">' +
+      '<button class="btn btn-secondary" type="submit">' + icon('send') + 'Kirim</button></form></div></section>';
+  }
+
   /* =================== Halaman Proyek =================== */
   var projFilter = 'ACTIVE';
+  var projView = MC.store.get('mcms.projects.view') || 'cards';
+  var projSort = { key: 'dueDate', dir: 'asc' };
   MC.PAGES.projects = function (main, sub, rest) {
     if (sub) return projectDetail(main, sub, rest[0] || 'tasks');
     main.innerHTML = '<div class="page">' + MC.pageHead('Workspace', 'Proyek', 'Pekerjaan besar seperti campaign, dokumentasi acara, atau produksi video.',
       '<button class="btn btn-primary" type="button" id="new-proj">' + icon('plus') + 'Proyek baru</button>') +
-      '<div class="toolbar">' + MC.segmented('pf', [['ACTIVE', 'Aktif'], ['DONE', 'Selesai'], ['ARCHIVED', 'Arsip'], ['', 'Semua']], projFilter, 'Filter status proyek') +
-      '<div class="search-field">' + icon('search') + '<input class="input" type="search" id="proj-q" placeholder="Cari proyek…" aria-label="Cari proyek"></div></div>' +
+      '<div class="toolbar">' + MC.segmented('pf', [['ACTIVE', 'Aktif'], ['DONE', 'Selesai'], ['ARCHIVED', 'Arsip'], ['ALL', 'Semua']], projFilter, 'Filter status proyek') +
+      '<div class="toolbar-right">' + MC.segmented('pv', [['cards', 'Kartu', 'grid'], ['table', 'Tabel', 'list']], projView, 'Tampilan proyek') +
+      '<div class="search-field">' + icon('search') + '<input class="input" type="search" id="proj-q" placeholder="Cari proyek…" aria-label="Cari proyek"></div></div></div>' +
       '<div id="proj-list">' + MC.loadingBox(180) + '</div></div>';
     $('#new-proj').addEventListener('click', function () { MC.create('project'); });
     var q = $('#proj-q'), deb;
     function load() {
-      MC.api('projects.list', { status: projFilter, q: q.value }).then(function (items) {
+      MC.load('projects.list', { status: projFilter === 'ALL' ? '' : projFilter, includeArchived: projFilter === 'ALL', q: q.value }, function (items) {
         if (!MC.stillOn('projects')) return;
+        lastItems = items;
+        if (projView === 'table') return drawTable();
         $('#proj-list').innerHTML = items.length ? '<div class="project-grid">' + items.map(function (p) { return MC.projectCard(p, '#/projects/' + encodeURIComponent(p.projectId)); }).join('') + '</div>'
           : '<div class="card card-pad">' + MC.emptyState('folder', q.value ? 'Tidak ada proyek yang cocok' : 'Belum ada proyek di sini',
             q.value ? 'Coba kata kunci lain.' : 'Buat proyek untuk mengelompokkan tugas, file, dan aktivitas.',
@@ -243,14 +279,21 @@
         var en = $('#empty-new'); if (en) en.addEventListener('click', function () { MC.create('project'); });
       }, function (e) { MC.errorState($('#proj-list'), e, load); });
     }
+    var lastItems = [];
+    function drawTable() {
+      var box = $('#proj-list'); if (!box) return;
+      box.innerHTML = '<p class="hint table-hint">' + lastItems.length + ' proyek · klik judul kolom untuk mengurutkan</p>' + MC.projectTable(lastItems, '#/projects/', projSort, { owner: true });
+      MC.bindProjectTable(box, projSort, drawTable);
+    }
     MC.bindSegmented(main, 'pf', function (v) { projFilter = v; load(); });
+    MC.bindSegmented(main, 'pv', function (v) { projView = v; MC.store.set('mcms.projects.view', v); load(); });
     q.addEventListener('input', function () { clearTimeout(deb); deb = setTimeout(function () { if (document.body.contains(q)) load(); }, 250); });
     load();
   };
 
   function projectDetail(main, id, tab) {
-    MC.skeletonPage(main);
-    MC.api('projects.get', { projectId: id }).then(function (d) {
+    if (MC.state.lastView !== location.hash) MC.skeletonPage(main);
+    MC.load('projects.get', { projectId: id }, function (d) {
       if (!MC.stillOn('projects')) return;
       var p = d.project;
       var tabs = [['tasks', 'Tugas', 'tasks', d.tasks.length], ['overview', 'Ringkasan', 'file'], ['files', 'File', 'image', d.assets.length],
@@ -355,7 +398,7 @@
 
   /* =================== Halaman Tugas =================== */
   var TF = { view: MC.store.get('mcms.tasks.view') || 'list', filter: 'open', project: '' };
-  var FILTERS = [['open', 'Terbuka'], ['today', 'Hari ini'], ['overdue', 'Terlambat'], ['done', 'Selesai'], ['all', 'Semua']];
+  var FILTERS = [['open', 'Terbuka'], ['requests', 'Dari atasan'], ['today', 'Hari ini'], ['overdue', 'Terlambat'], ['done', 'Selesai'], ['all', 'Semua']];
   MC.PAGES.tasks = function (main, sub) {
     if (sub && FILTERS.some(function (f) { return f[0] === sub; })) TF.filter = sub;
     main.innerHTML = '<div class="page">' + MC.pageHead('Workspace', 'Tugas', 'Pekerjaan proyek dan tugas mandiri dalam satu tempat.',
@@ -377,7 +420,7 @@
     MC.bindSegmented(main, 'tv', function (v) { TF.view = v; MC.store.set('mcms.tasks.view', v); draw(); });
 
     function load() {
-      MC.api('tasks.list', { projectId: TF.project }).then(function (items) { if (!MC.stillOn('tasks')) return; all = items; draw(); },
+      MC.load('tasks.list', { projectId: TF.project }, function (items) { if (!MC.stillOn('tasks')) return; all = items; draw(); },
         function (e) { MC.errorState($('#task-body'), e, load); });
     }
     function matchesFilter(t, f) {
@@ -386,6 +429,7 @@
       if (f === 'today') return ['TODO', 'IN_PROGRESS', 'REVIEW'].indexOf(t.status) >= 0 && (t.dueDate === today || t.plannedDate === today);
       if (f === 'overdue') return t.overdue;
       if (f === 'done') return t.status === 'DONE';
+      if (f === 'requests') return t.fromSupervisor;
       return true;
     }
     function draw() {
@@ -533,7 +577,7 @@
     MC.bindSegmented(main, 'ap', function (v) { AF.period = v; load(); });
     function load() {
       var r = MC.periodRange(AF.period);
-      MC.api('activities.list', { from: r.from, q: $('#act-q').value }).then(function (d) {
+      MC.load('activities.list', { from: r.from, q: $('#act-q').value }, function (d) {
         if (!MC.stillOn('activity')) return;
         $('#act-body').innerHTML = '<div class="summary-strip"><div><span class="v num">' + d.total + '</span><span class="l">aktivitas</span></div>' +
           '<div><span class="v num">' + esc(MC.fmtMinutes(d.totalMinutes)) + '</span><span class="l">waktu tercatat</span></div></div>' +

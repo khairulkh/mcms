@@ -36,22 +36,33 @@
     });
   };
 
+  var EP = { view: MC.store.get('mcms.execprojects.view') || 'cards', sort: { key: 'dueDate', dir: 'asc' } };
   MC.PAGES['exec-projects'] = function (main, sub) {
     if (sub) return execProject(main, sub);
-    main.innerHTML = '<div class="page">' + MC.pageHead('Mode Atasan', 'Proyek', 'Proyek Media Center yang dibagikan beserta progresnya.') + '<div id="ep-body">' + MC.loadingBox(200) + '</div></div>';
+    main.innerHTML = '<div class="page">' + MC.pageHead('Mode Atasan', 'Proyek', 'Proyek Media Center yang dibagikan beserta progresnya.') +
+      '<div class="toolbar"><span class="hint" id="ep-count"></span>' + MC.segmented('epv', [['cards', 'Kartu', 'grid'], ['table', 'Tabel', 'list']], EP.view, 'Tampilan proyek') + '</div>' +
+      '<div id="ep-body">' + MC.loadingBox(200) + '</div></div>';
+    var last = [];
+    function draw() {
+      var box = $('#ep-body'); if (!box) return;
+      $('#ep-count').textContent = last.length + ' proyek';
+      if (!last.length) { box.innerHTML = '<div class="card card-pad">' + MC.emptyState('folder', 'Belum ada proyek', 'Proyek yang dibagikan akan tampil di sini.') + '</div>'; return; }
+      if (EP.view === 'table') { box.innerHTML = MC.projectTable(last, '#/exec-projects/', EP.sort); MC.bindProjectTable(box, EP.sort, draw); return; }
+      box.innerHTML = '<div class="project-grid">' + last.map(function (p) { return MC.projectCard(p, '#/exec-projects/' + encodeURIComponent(p.projectId)); }).join('') + '</div>';
+    }
+    MC.bindSegmented(main, 'epv', function (v) { EP.view = v; MC.store.set('mcms.execprojects.view', v); draw(); });
     function load() {
-      MC.api('exec.projects').then(function (items) {
+      MC.load('exec.projects', {}, function (items) {
         if (!MC.stillOn('exec-projects')) return;
-        $('#ep-body').innerHTML = items.length ? '<div class="project-grid">' + items.map(function (p) { return MC.projectCard(p, '#/exec-projects/' + encodeURIComponent(p.projectId)); }).join('') + '</div>'
-          : '<div class="card card-pad">' + MC.emptyState('folder', 'Belum ada proyek', 'Proyek yang dibagikan akan tampil di sini.') + '</div>';
+        last = items; draw();
       }, function (e) { MC.errorState($('#ep-body'), e, load); });
     }
     load();
   };
 
   function execProject(main, id) {
-    MC.skeletonPage(main);
-    MC.api('exec.project', { projectId: id }).then(function (d) {
+    if (MC.state.lastView !== location.hash) MC.skeletonPage(main);
+    MC.load('exec.project', { projectId: id }, function (d) {
       if (!MC.stillOn('exec-projects')) return;
       var p = d.project, isSup = MC.state.me.role === 'SUPERVISOR';
       var due = MC.dueLabel(p.dueDate, p.status === 'DONE');
@@ -94,7 +105,7 @@
     MC.bindSegmented(main, 'eap', function (v) { EA.period = v; load(); });
     function load() {
       var r = MC.periodRange(EA.period);
-      MC.api('exec.activity', { from: r.from }).then(function (d) {
+      MC.load('exec.activity', { from: r.from }, function (d) {
         if (!MC.stillOn('exec-activity')) return;
         $('#eact-body').innerHTML = '<div class="summary-strip"><div><span class="v num">' + d.total + '</span><span class="l">aktivitas</span></div>' +
           '<div><span class="v num">' + esc(MC.fmtMinutes(d.totalMinutes)) + '</span><span class="l">waktu tercatat</span></div></div>' +
