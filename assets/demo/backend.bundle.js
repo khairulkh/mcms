@@ -1,4 +1,4 @@
-/* MCMS V1.0.0 — backend asli (dari folder backend/) untuk MODE DEMO di browser. File ini dibuat otomatis oleh tools/build.js. */
+/* MCMS V1.2.0 — backend asli (dari folder backend/) untuk MODE DEMO di browser. File ini dibuat otomatis oleh tools/build.js. */
 window.MCMSBackendFactory = function (G) {
   'use strict';
   var SpreadsheetApp = G.SpreadsheetApp;
@@ -24,14 +24,14 @@ window.MCMSBackendFactory = function (G) {
 
 var SETUP_CONFIG = {
   // Client ID dari Google Cloud Console → Credentials → OAuth client ID (Web application)
-  GOOGLE_CLIENT_ID: 'TEMPEL_CLIENT_ID_DI_SINI.apps.googleusercontent.com',
+  GOOGLE_CLIENT_ID: '482980661772-ljsts1d29g8cqfdvecsk1l6e2lid0sef.apps.googleusercontent.com',
   // Alamat frontend MCMS (GitHub Pages / Cloudflare Pages). Boleh dikosongkan dulu dan diisi nanti;
   // hanya dibutuhkan untuk tautan undangan atasan. Contoh: 'https://namakamu.github.io/mcms/'
-  APP_URL: 'https://USERNAME.github.io/mcms/',
+  APP_URL: 'https://khairulkh.github.io/mcms/',
   // Zona waktu sekolah
   TIMEZONE: 'Asia/Jakarta',
   // Nama tampilan pemilik (opsional)
-  OWNER_NAME: ''
+  OWNER_NAME: 'Khairul Imam, S.Pd'
 };
 
 /** Kolom yang tetap dibiarkan berformat otomatis (tanggal / angka). Selainnya dipaksa teks biasa. */
@@ -279,7 +279,7 @@ function cekEmailUndangan() {
  * File ini TIDAK perlu diubah. Pengaturan instalasi ada di Setup.gs (SETUP_CONFIG).
  */
 
-var MCMS_VERSION = '1.0.0';
+var MCMS_VERSION = '1.2.0';
 var SCHEMA_VERSION = '1.0.0';
 
 var SESSION_TTL_SECONDS = 21600;          // 6 jam (batas maksimum CacheService)
@@ -308,7 +308,7 @@ var SCHEMA = {
     'created_at', 'updated_at', 'is_deleted'],
   TASKS: ['task_id', 'project_id', 'title', 'description', 'status', 'priority', 'weight', 'progress',
     'planned_date', 'due_date', 'completed_at', 'is_standalone', 'visibility', 'created_by', 'created_at',
-    'updated_at', 'is_deleted', 'category_id', 'blocker_note', 'started_at'],
+    'updated_at', 'is_deleted', 'category_id', 'blocker_note', 'started_at', 'requested_by', 'reference_links', 'requested_at'],
   CONTENTS: ['content_id', 'project_id', 'title', 'category_id', 'format', 'platform', 'status', 'brief',
     'publish_date', 'published_url', 'visibility', 'created_at', 'updated_at', 'is_deleted'],
   DELIVERABLES: ['deliverable_id', 'task_id', 'content_id', 'title', 'version', 'status', 'asset_id',
@@ -317,7 +317,7 @@ var SCHEMA = {
     'created_at', 'resolved_at'],
   ASSETS: ['asset_id', 'drive_file_id', 'file_name', 'mime_type', 'size_bytes', 'category', 'purpose',
     'visibility', 'uploaded_by', 'created_at', 'is_deleted', 'file_type', 'source', 'description', 'project_id',
-    'shared_with', 'updated_at'],
+    'shared_with', 'updated_at', 'thumb_file_id'],
   ASSET_LINKS: ['link_id', 'asset_id', 'entity_type', 'entity_id', 'relation', 'created_at'],
   ACTIVITY_LOG: ['activity_id', 'title', 'description', 'category_id', 'project_id', 'task_id', 'content_id',
     'result', 'activity_date', 'planned_date', 'visibility', 'created_by', 'created_at', 'duration_minutes',
@@ -403,9 +403,10 @@ var DRIVE_STRUCTURE = {
 var PROJECT_STATUS = ['PLANNING', 'IN_PROGRESS', 'ON_HOLD', 'DONE', 'ARCHIVED'];
 var TASK_STATUS = ['TODO', 'IN_PROGRESS', 'REVIEW', 'DONE', 'CANCELLED'];
 var PRIORITIES = ['LOW', 'MEDIUM', 'HIGH', 'URGENT'];
-var ASSET_STAGES = ['BRIEF', 'WORKING', 'REVIEW', 'FINAL', 'EVIDENCE', 'OTHER'];
+var ASSET_STAGES = ['BRIEF', 'WORKING', 'REVIEW', 'FINAL', 'EVIDENCE', 'REFERENCE', 'OTHER'];
 var REPORT_TYPES = ['DAILY', 'WEEKLY', 'MONTHLY'];
-var REVIEW_ENTITIES = ['PROJECT', 'REPORT', 'GENERAL'];
+var REVIEW_ENTITIES = ['PROJECT', 'REPORT', 'GENERAL', 'TASK'];
+var THUMB_MAX_CHARS = 90000;   // thumbnail WebP/JPEG kecil dari browser (±60 KB)
 
 /** Tipe MIME yang boleh diunggah (file yang bisa dieksekusi browser seperti HTML/JS diblokir). */
 var UPLOAD_MIME_ALLOW = [
@@ -769,6 +770,8 @@ var PERMISSIONS = {
   'feedback.create': ['SUPERVISOR'],          // atasan menulis feedback; pemilik membaca & menandai
   'feedback.view': ['OWNER', 'SUPERVISOR'],
   'feedback.manage': ['OWNER'],
+  'request.create': ['SUPERVISOR'],
+  'request.view': ['OWNER', 'SUPERVISOR'],
   'activity.manage': ['OWNER'],
   'category.manage': ['OWNER'],
   'search.global': ['OWNER'],
@@ -1206,18 +1209,19 @@ var BrandingService = (function () {
     U.checkImageSignature(parsed.mime, parsed.bytes);
     var ext = parsed.mime === 'image/png' ? 'png' : parsed.mime === 'image/webp' ? 'webp' : 'jpg';
     var folderId = Props.get('DRIVE_BRANDING_ID');
-    var folder = folderId ? DriveApp.getFolderById(folderId) : DriveApp.getFolderById(Props.get('DRIVE_ROOT_ID'));
     var stamp = Utilities.formatDate(new Date(), U.timezone(), 'yyyyMMdd-HHmmss');
     var fileName = label.replace(/\s+/g, '_') + '_' + stamp + '.' + ext;
-    var file;
+    var fileId;
     try {
-      file = folder.createFile(Utilities.newBlob(parsed.bytes, parsed.mime, fileName));
+      fileId = StorageService.put(['00_BRANDING'], Utilities.newBlob(parsed.bytes, parsed.mime, fileName), function () {
+        return folderId ? DriveApp.getFolderById(folderId) : DriveApp.getFolderById(Props.get('DRIVE_ROOT_ID'));
+      });
     } catch (e) {
       throw new AppError(ERR.INTERNAL, 'Logo gagal disimpan ke Google Drive. Coba lagi.');
     }
     var assetId = U.newId('AST');
     Db.insert('ASSETS', {
-      asset_id: assetId, drive_file_id: file.getId(), file_name: fileName, mime_type: parsed.mime,
+      asset_id: assetId, drive_file_id: fileId, file_name: fileName, mime_type: parsed.mime,
       size_bytes: parsed.bytes.length, category: 'BRANDING', purpose: label, visibility: VISIBILITY.SUPERVISOR,
       uploaded_by: owner.user_id, created_at: U.now(), is_deleted: false
     });
@@ -1323,6 +1327,7 @@ var Repo = (function () {
       get categories() { return get('categories', function () { return Db.all('CATEGORIES'); }); },
       get reviews() { return get('reviews', function () { return Db.all('REVIEW_LOG'); }); },
       get reports() { return get('reports', function () { return Db.all('REPORTS').filter(alive); }); },
+      get usersById() { return get('usersById', function () { return indexBy(Db.all('USERS'), 'user_id'); }); },
       get timeLogs() { return get('timeLogs', function () { return Db.all('TIME_LOG'); }); },
       get projectsById() { return get('projectsById', function () { return indexBy(b.projects, 'project_id'); }); },
       get tasksById() { return get('tasksById', function () { return indexBy(b.tasks, 'task_id'); }); },
@@ -1449,9 +1454,18 @@ var Repo = (function () {
       visibility: t.visibility || 'PRIVATE',
       overdue: taskOverdue(t),
       evidenceCount: evidenceCount(b, 'TASK', t.task_id),
+      fromSupervisor: !!t.requested_by,
+      requestedBy: t.requested_by ? ((b.usersById[t.requested_by] || {}).display_name || 'Atasan') : '',
+      requestedAt: U.toIso(t.requested_at),
+      referenceLinks: parseLinks(t.reference_links),
       createdAt: U.toIso(t.created_at),
       updatedAt: U.toIso(t.updated_at)
     };
+  }
+
+  function parseLinks(v) {
+    if (!v) return [];
+    try { var arr = JSON.parse(v); return Array.isArray(arr) ? arr.filter(function (x) { return /^https?:\/\//i.test(x); }) : []; } catch (e) { return []; }
   }
 
   function activityDto(a, b) {
@@ -1660,14 +1674,27 @@ var DriveService = (function () {
     path: path,
     projectFolder: projectFolder,
 
+    /**
+     * Jalur folder (nama-nama, relatif dari folder utama) untuk unggahan — dipakai penyimpanan tambahan
+     * (StorageService). Strukturnya sama dengan uploadFolder di Drive utama.
+     */
+    uploadPath: function (project, stage, fileType) {
+      var proj = project ? ['01_PROJECTS', project.project_id + ' ' + safeName(project.name)] : null;
+      if (stage === 'REFERENCE') return proj ? proj.concat('01_BRIEF') : ['07_REFERENSI_ATASAN'];
+      if (proj) return proj.concat(STAGE_FOLDER[stage] || '02_WORKING');
+      return ['02_ASSET_LIBRARY', LIBRARY_FOLDER[fileType] || 'DOCUMENT'];
+    },
+
     /** Folder tujuan unggahan sesuai proyek & tahap, atau Asset Library sesuai tipe file. */
     uploadFolder: function (project, stage, fileType) {
+      if (stage === 'REFERENCE') return project ? child(projectFolder(project), '01_BRIEF') : path(['07_REFERENSI_ATASAN']);
       if (project) return child(projectFolder(project), STAGE_FOLDER[stage] || '02_WORKING');
       return path(['02_ASSET_LIBRARY', LIBRARY_FOLDER[fileType] || 'DOCUMENT']);
     },
 
     reportFolder: function (type) { return path(['03_REPORTS', type === 'DAILY' ? 'DAILY' : type === 'MONTHLY' ? 'MONTHLY' : 'WEEKLY']); },
     backupFolder: function () { return path(['05_SYSTEM_BACKUP']); },
+    thumbsFolder: function () { return path(['06_THUMBS']); },
 
     /** Mengambil ID file dari berbagai bentuk tautan Google Drive. */
     parseFileId: function (url) {
@@ -1783,7 +1810,7 @@ var ProjectService = (function () {
         .filter(function (x) {
           if (status === 'ACTIVE') return Repo.ACTIVE_PROJECT.indexOf(x.status) >= 0;
           if (status) return x.status === status;
-          return x.status !== 'ARCHIVED';
+          return p.includeArchived ? true : x.status !== 'ARCHIVED';
         })
         .filter(function (x) { return U.matches(p.q, [x.name, x.project_id, x.description]); })
         .map(function (x) { return Repo.projectDto(x, b, { owner: true }); })
@@ -1908,6 +1935,7 @@ var TaskService = (function () {
         .filter(function (t) {
           if (p.projectId === '__standalone') { if (t.project_id) return false; }
           else if (p.projectId && t.project_id !== p.projectId) return false;
+          if (status === 'REQUESTS') return !!t.requested_by;
           if (status === 'OPEN') return Repo.OPEN_TASK.indexOf(t.status) >= 0;
           if (status === 'OVERDUE') return Repo.taskOverdue(t);
           if (status) return t.status === status;
@@ -1926,7 +1954,9 @@ var TaskService = (function () {
       var assetIds = {};
       b.links.forEach(function (l) { if (l.entity_type === 'TASK' && l.entity_id === t.task_id) assetIds[l.asset_id] = true; });
       var assets = b.assets.filter(function (a) { return assetIds[a.asset_id]; }).map(function (a) { return Repo.assetDto(a, b, { owner: true }); });
-      return { task: Repo.taskDto(t, b), activities: activities, assets: assets };
+      var comments = b.reviews.filter(function (r) { return r.entity_type === 'TASK' && r.entity_id === t.task_id; })
+        .map(Repo.reviewDto).sort(function (x, y) { return x.createdAt < y.createdAt ? -1 : 1; });
+      return { task: Repo.taskDto(t, b), activities: activities, assets: assets, comments: comments };
     },
 
     create: function (user, p) {
@@ -1956,6 +1986,9 @@ var TaskService = (function () {
       var b = Repo.bundle();
       var current = Repo.requireTask(id, b);
       var patch = readFields(p, current, b);
+      if (current.requested_by && patch.visibility === VISIBILITY.PRIVATE) {
+        throw new AppError(ERR.VALIDATION, 'Tugas ini permintaan dari atasan, jadi harus tetap terlihat oleh atasan.');
+      }
       var now = U.now();
       applyStatusRules(patch, current, now);
       patch.updated_at = now;
@@ -2085,6 +2118,189 @@ var ActivityService = (function () {
   };
 })();
 
+// ==================== StorageService.gs ====================
+/**
+ * StorageService.gs — tempat penyimpanan file yang bisa diganti tanpa mereset data.
+ *
+ * Kuota Google Drive dihitung menurut PEMILIK file. Karena backend berjalan sebagai akun pemilik,
+ * semua file baru memakai kuota akun itu. Bila Drive penuh, pasang "Simpul Penyimpanan MCMS"
+ * (dist/apps-script/StorageNode.gs) di akun Google lain, lalu daftarkan URL + kode rahasianya
+ * di Pengaturan > Penyimpanan. File BARU (unggahan, thumbnail, logo, PDF laporan, backup) lalu dibuat
+ * oleh akun tersebut sehingga memakai kuotanya.
+ *
+ * - Database (spreadsheet) tidak dipindah. File lama tetap di tempatnya; ID file tidak berubah.
+ * - Simpul membagikan foldernya ke akun pemilik (Editor), jadi pratinjau, buka file, dan berbagi
+ *   ke atasan tetap berjalan lewat akun pemilik seperti biasa.
+ * - Daftar simpul + kode rahasia disimpan di Script Properties (tidak di spreadsheet, tidak dikirim ke browser).
+ */
+var StorageService = (function () {
+  var KEY_NODES = 'STORAGE_NODES';
+  var KEY_ACTIVE = 'STORAGE_ACTIVE';
+  var MAIN_ID = 'MAIN';
+  var URL_RE = /^https:\/\/script\.google\.com\/(?:a\/macros\/[A-Za-z0-9.-]+|macros)\/s\/[A-Za-z0-9_-]{20,}\/exec$/;
+
+  function nodes() {
+    try { var v = JSON.parse(Props.get(KEY_NODES) || '[]'); return Array.isArray(v) ? v : []; } catch (e) { return []; }
+  }
+  function saveNodes(list) { Props.set(KEY_NODES, JSON.stringify(list)); }
+  function activeId() { return Props.get(KEY_ACTIVE) || MAIN_ID; }
+  function findNode(id) { return nodes().filter(function (n) { return n.id === id; })[0] || null; }
+  function activeNode() { var id = activeId(); return id === MAIN_ID ? null : findNode(id); }
+
+  function ownerEmail() {
+    try { return String(Session.getEffectiveUser().getEmail() || '').toLowerCase(); } catch (e) { return ''; }
+  }
+
+  /** Panggil simpul. Kode rahasia dikirim di badan POST (HTTPS), bukan di URL. */
+  function call(node, op, body) {
+    body = body || {};
+    body.op = op;
+    body.secret = node.secret;
+    var res;
+    try {
+      res = UrlFetchApp.fetch(node.url, {
+        method: 'post', contentType: 'application/json', payload: JSON.stringify(body),
+        muteHttpExceptions: true, followRedirects: true
+      });
+    } catch (e) {
+      throw new AppError(ERR.INTERNAL, 'Penyimpanan "' + node.label + '" tidak bisa dihubungi. Periksa URL dan pastikan skripnya sudah di-deploy.');
+    }
+    var j = null;
+    try { j = JSON.parse(res.getContentText()); } catch (e) { j = null; }
+    if (!j) {
+      throw new AppError(ERR.INTERNAL, 'Penyimpanan "' + node.label + '" tidak menjawab dengan benar. Pastikan deploy sebagai Web app dengan akses "Siapa saja".');
+    }
+    if (!j.ok) throw new AppError(ERR.INTERNAL, 'Penyimpanan "' + node.label + '": ' + String(j.error || 'gagal.'));
+    return j;
+  }
+
+  function cleanPath(names) {
+    return (names || []).map(function (n) { return String(n || '').replace(/[\\/]+/g, ' ').trim().slice(0, 100); }).filter(String);
+  }
+
+  function quotaMain() {
+    try { return { used: Number(DriveApp.getStorageUsed()) || 0, limit: Number(DriveApp.getStorageLimit()) || 0 }; } catch (e) { return { used: 0, limit: 0 }; }
+  }
+
+  function dto(n, info) {
+    return {
+      id: n.id, label: n.label, email: info ? info.email : (n.email || ''), active: activeId() === n.id,
+      used: info ? info.used : null, limit: info ? info.limit : null, folderUrl: info && info.rootId ? 'https://drive.google.com/drive/folders/' + info.rootId : '',
+      addedAt: n.addedAt || '', online: !!info, error: info ? '' : (n._error || '')
+    };
+  }
+
+  function info(n) {
+    try { return call(n, 'info', { ownerEmail: ownerEmail() }); } catch (e) { n._error = e.message; return null; }
+  }
+
+  return {
+    MAIN_ID: MAIN_ID,
+
+    /** Akun yang dipakai untuk file baru (untuk ditampilkan). */
+    activeLabel: function () { var n = activeNode(); return n ? n.label : 'Drive utama'; },
+
+    /**
+     * Simpan file baru. pathNames: folder relatif dari folder utama, mis. ['02_ASSET_LIBRARY','PHOTO'].
+     * mainFolder: fungsi yang mengembalikan Folder Drive utama (dipakai bila tidak ada simpul aktif).
+     * Mengembalikan ID file.
+     */
+    put: function (pathNames, blob, mainFolder) {
+      var n = activeNode();
+      if (!n) return (mainFolder ? mainFolder() : DriveService.path(pathNames)).createFile(blob).getId();
+      var j = call(n, 'put', {
+        path: cleanPath(pathNames), name: blob.getName(), mime: blob.getContentType(), data: Utilities.base64Encode(blob.getBytes())
+      });
+      return String(j.id);
+    },
+
+    /** Salinan spreadsheet (backup). Mengembalikan { id, url }. */
+    copySpreadsheet: function (ssId, pathNames, name, mainFolder) {
+      var n = activeNode();
+      if (!n) { var c = DriveApp.getFileById(ssId).makeCopy(name, mainFolder()); return { id: c.getId(), url: c.getUrl() }; }
+      var j = call(n, 'copy', { fileId: ssId, path: cleanPath(pathNames), name: name });
+      return { id: String(j.id), url: String(j.url || ('https://docs.google.com/spreadsheets/d/' + j.id + '/edit')) };
+    },
+
+    /** Daftar file di satu folder penyimpanan aktif (untuk daftar backup). */
+    listFiles: function (pathNames, mainFolder, max) {
+      var n = activeNode();
+      var out = [];
+      if (!n) {
+        var it = mainFolder().getFiles();
+        while (it.hasNext() && out.length < (max || 50)) {
+          var f = it.next();
+          out.push({ name: f.getName(), url: f.getUrl(), createdAt: U.toIso(f.getDateCreated()) });
+        }
+        return out;
+      }
+      var j = call(n, 'list', { path: cleanPath(pathNames), max: max || 50 });
+      return (j.files || []).map(function (f) { return { name: String(f.name), url: String(f.url), createdAt: String(f.createdAt) }; });
+    },
+
+    list: function () {
+      var q = quotaMain();
+      var rootId = Props.get('DRIVE_ROOT_ID');
+      var items = [{
+        id: MAIN_ID, label: 'Drive utama', email: ownerEmail(), active: activeId() === MAIN_ID, used: q.used, limit: q.limit,
+        folderUrl: rootId ? 'https://drive.google.com/drive/folders/' + rootId : '', addedAt: '', online: true, error: '', main: true
+      }];
+      nodes().forEach(function (n) { items.push(dto(n, info(n))); });
+      return { activeId: activeId(), items: items };
+    },
+
+    add: function (user, p) {
+      var label = U.cleanText(p.label, 40);
+      var url = String(p.url || '').trim();
+      var secret = String(p.secret || '').trim();
+      if (label.length < 2) throw new AppError(ERR.VALIDATION, 'Nama penyimpanan minimal 2 karakter.');
+      if (!URL_RE.test(url)) throw new AppError(ERR.VALIDATION, 'URL harus URL Web app Apps Script, contoh: https://script.google.com/macros/s/…/exec');
+      if (!/^[A-Za-z0-9]{32,128}$/.test(secret)) throw new AppError(ERR.VALIDATION, 'Kode rahasia tidak valid. Salin dari log fungsi siapkanPenyimpanan().');
+      var list = nodes();
+      if (list.some(function (n) { return n.url === url; })) throw new AppError(ERR.CONFLICT, 'Penyimpanan dengan URL ini sudah terdaftar.');
+      if (list.length >= 10) throw new AppError(ERR.VALIDATION, 'Maksimal 10 penyimpanan tambahan.');
+      var node = { id: U.newId('STG'), label: label, url: url, secret: secret, addedAt: U.toIso(U.now()) };
+      var i = call(node, 'info', { ownerEmail: ownerEmail() });
+      node.email = String(i.email || '');
+      if (node.email && node.email.toLowerCase() === ownerEmail()) {
+        throw new AppError(ERR.VALIDATION, 'Simpul ini memakai akun yang sama dengan Drive utama, jadi kuotanya sama. Pasang di akun Google lain.');
+      }
+      // Simpul perlu bisa menyalin spreadsheet untuk backup.
+      try { if (node.email) DriveApp.getFileById(Props.get('SPREADSHEET_ID')).addViewer(node.email); } catch (e) { console.error('Bagikan database ke simpul gagal: ' + e.message); }
+      list.push(node);
+      saveNodes(list);
+      Audit.log(user, 'STORAGE_ADDED', 'SYSTEM', node.id, { label: label, email: node.email });
+      return this.list();
+    },
+
+    activate: function (user, p) {
+      var id = String(p.id || '');
+      if (id !== MAIN_ID) {
+        var n = findNode(id);
+        if (!n) throw new AppError(ERR.NOT_FOUND, 'Penyimpanan tidak ditemukan.');
+        var i = call(n, 'info', { ownerEmail: ownerEmail() });
+        if (i.limit > 0 && i.used >= i.limit) throw new AppError(ERR.VALIDATION, 'Drive "' + n.label + '" juga sudah penuh.');
+      }
+      var from = activeId();
+      Props.set(KEY_ACTIVE, id);
+      Audit.log(user, 'STORAGE_ACTIVATED', 'SYSTEM', id, { from: from, to: id });
+      return this.list();
+    },
+
+    remove: function (user, p) {
+      var id = String(p.id || '');
+      if (id === MAIN_ID) throw new AppError(ERR.VALIDATION, 'Drive utama tidak bisa dihapus.');
+      if (activeId() === id) throw new AppError(ERR.CONFLICT, 'Penyimpanan ini sedang aktif. Aktifkan penyimpanan lain dulu.');
+      var list = nodes();
+      var n = list.filter(function (x) { return x.id === id; })[0];
+      if (!n) throw new AppError(ERR.NOT_FOUND, 'Penyimpanan tidak ditemukan.');
+      saveNodes(list.filter(function (x) { return x.id !== id; }));
+      Audit.log(user, 'STORAGE_REMOVED', 'SYSTEM', id, { label: n.label });
+      return this.list();
+    }
+  };
+})();
+
 // ==================== AssetService.gs ====================
 /**
  * AssetService.gs — arsip file & bukti kerja di Google Drive.
@@ -2144,7 +2360,8 @@ var AssetService = (function () {
       asset_id: U.newId('AST'), drive_file_id: file.id, file_name: meta.fileName, mime_type: meta.mimeType,
       size_bytes: meta.size, category: meta.categoryId || '', purpose: meta.stage, visibility: meta.visibility,
       uploaded_by: user.user_id, created_at: now, is_deleted: false, file_type: Repo.fileTypeOf(meta.mimeType),
-      source: source, description: meta.description, project_id: rel.projectId, shared_with: '', updated_at: now
+      source: source, description: meta.description, project_id: rel.projectId, shared_with: '', updated_at: now,
+      thumb_file_id: ''
     };
     Db.insert('ASSETS', row);
     if (rel.projectId && !rel.taskId) addLink(row.asset_id, 'PROJECT', rel.projectId, meta.stage);
@@ -2180,6 +2397,24 @@ var AssetService = (function () {
       list.forEach(function (email) { try { f.removeViewer(email); } catch (e) { /* sudah tidak punya akses */ } });
     } catch (e) { console.error('Cabut akses file gagal: ' + e.message); }
     Db.update('ASSETS', 'asset_id', a.asset_id, { shared_with: '' });
+  }
+
+  /**
+   * Thumbnail kecil (WebP/JPEG ±10–40 KB) yang dibuat browser saat unggah.
+   * Disimpan sebagai file terpisah di 06_THUMBS dan langsung dimasukkan ke cache server,
+   * sehingga pratinjau tidak perlu mengunduh file asli yang besar.
+   */
+  function saveThumb(assetId, p) {
+    var data = String(p.thumbBase64 || '');
+    var mime = String(p.thumbMime || 'image/webp');
+    if (!data || data.length > THUMB_MAX_CHARS || !/^[A-Za-z0-9+/=]+$/.test(data) || !/^image\/(webp|jpeg)$/.test(mime)) return;
+    try {
+      var bytes = Utilities.base64Decode(data);
+      var thumbId = StorageService.put(['06_THUMBS'], Utilities.newBlob(bytes, mime, assetId + (mime === 'image/webp' ? '.webp' : '.jpg')),
+        function () { return DriveService.thumbsFolder(); });
+      Db.update('ASSETS', 'asset_id', assetId, { thumb_file_id: thumbId });
+      CacheService.getScriptCache().put(THUMB_PREFIX + assetId, 'data:' + mime + ';base64,' + data, 21600);
+    } catch (e) { console.error('Simpan thumbnail gagal: ' + e.message); }
   }
 
   function requireAsset(id) {
@@ -2233,15 +2468,18 @@ var AssetService = (function () {
       meta.fileName = fileName; meta.mimeType = mime; meta.size = bytes.length;
       var rel = readRelations(p, b);
       var project = rel.projectId ? b.projectsById[rel.projectId] : null;
-      var file;
+      var fileId;
       try {
-        var folder = DriveService.uploadFolder(project, meta.stage, Repo.fileTypeOf(mime));
-        file = folder.createFile(Utilities.newBlob(bytes, mime, fileName));
+        var fileType = Repo.fileTypeOf(mime);
+        fileId = StorageService.put(DriveService.uploadPath(project, meta.stage, fileType), Utilities.newBlob(bytes, mime, fileName),
+          function () { return DriveService.uploadFolder(project, meta.stage, fileType); });
       } catch (e) {
         if (e instanceof AppError) throw e;
-        throw new AppError(ERR.INTERNAL, 'File gagal disimpan ke Google Drive (kuota penuh atau gangguan). Data tidak dicatat. Coba lagi.');
+        throw new AppError(ERR.INTERNAL, 'File gagal disimpan ke Google Drive (kuota penuh atau gangguan). Data tidak dicatat. ' +
+          'Bila Drive penuh, tambahkan penyimpanan baru di Pengaturan > Penyimpanan.');
       }
-      var id = record(user, { id: file.getId() }, meta, rel, 'UPLOAD');
+      var id = record(user, { id: fileId }, meta, rel, 'UPLOAD');
+      saveThumb(id, p);
       return one(id);
     },
 
@@ -2305,21 +2543,25 @@ var AssetService = (function () {
 
     /** Thumbnail kecil sebagai data URL. OWNER: semua aset; SUPERVISOR: hanya yang dibagikan. */
     thumbs: function (user, p) {
-      var ids = Array.isArray(p.ids) ? p.ids.slice(0, 12).map(String) : [];
+      var ids = Array.isArray(p.ids) ? p.ids.slice(0, 24).map(String) : [];
       var allowed;
       if (user.role === ROLES.OWNER) allowed = Repo.indexBy(Repo.bundle().assets, 'asset_id');
       else allowed = Repo.indexBy(Repo.supervisorScope(Repo.bundle()).assets, 'asset_id');
       var cache = CacheService.getScriptCache();
       var out = {};
+      var hits = {};
+      try { hits = cache.getAll(ids.map(function (id) { return THUMB_PREFIX + id; })) || {}; } catch (e) { hits = {}; }
       ids.forEach(function (id) {
         var a = allowed[id];
         if (!a || !a.drive_file_id) { out[id] = ''; return; }
-        var hit = cache.get(THUMB_PREFIX + id);
+        var hit = hits[THUMB_PREFIX + id];
         if (hit !== null && hit !== undefined) { out[id] = hit; return; }
         var url = '';
         try {
-          var f = DriveApp.getFileById(a.drive_file_id);
-          var blob = f.getThumbnail();
+          // 1) thumbnail kecil buatan browser; 2) thumbnail bawaan Google Drive
+          var blob = null;
+          if (a.thumb_file_id) { try { blob = DriveApp.getFileById(a.thumb_file_id).getBlob(); } catch (e) { blob = null; } }
+          if (!blob) blob = DriveApp.getFileById(a.drive_file_id).getThumbnail();
           if (blob) {
             var mime = blob.getContentType() || 'image/png';
             if (/^image\/(png|jpeg|webp|gif)$/.test(mime)) url = 'data:' + mime + ';base64,' + Utilities.base64Encode(blob.getBytes());
@@ -2361,6 +2603,131 @@ var AssetService = (function () {
         try { DriveApp.getFileById(a.drive_file_id).removeViewer(email); } catch (e) { /* abaikan */ }
         Db.update('ASSETS', 'asset_id', a.asset_id, { shared_with: list.filter(function (x) { return x !== email; }).join(',') });
       });
+    }
+  };
+})();
+
+// ==================== RequestService.gs ====================
+/**
+ * RequestService.gs — permintaan kerja dari atasan.
+ *
+ * Atasan menulis permintaan (judul, brief, deadline, tautan & file referensi). Permintaan langsung menjadi
+ * TUGAS di daftar pemilik (ditandai "Dari atasan"), selalu terlihat di Mode Atasan, sehingga atasan bisa
+ * memantau status, progres, dan bukti hasilnya. Diskusi dua arah memakai REVIEW_LOG (entity_type TASK).
+ * Atasan tetap tidak bisa mengubah data kerja lain.
+ */
+var RequestService = (function () {
+  var MAX_LINKS = 10;
+
+  function readLinks(v) {
+    var list = Array.isArray(v) ? v : String(v || '').split(/[\s\n]+/);
+    var out = [];
+    list.map(function (x) { return String(x || '').trim(); }).filter(String).forEach(function (u) {
+      if (!/^https?:\/\/[^\s]+\.[^\s]+/i.test(u) || u.length > 500) throw new AppError(ERR.VALIDATION, 'Tautan referensi tidak valid: ' + u.slice(0, 60) + '. Gunakan alamat lengkap yang diawali https://');
+      if (out.indexOf(u) < 0) out.push(u);
+    });
+    if (out.length > MAX_LINKS) throw new AppError(ERR.VALIDATION, 'Maksimal ' + MAX_LINKS + ' tautan referensi per permintaan.');
+    return out;
+  }
+
+  /** Tugas permintaan yang boleh diakses user ini. */
+  function requireRequest(user, taskId) {
+    var t = Db.findOne('TASKS', 'task_id', String(taskId || ''));
+    if (!t || !Repo.alive(t) || !t.requested_by) throw new AppError(ERR.NOT_FOUND, 'Permintaan tidak ditemukan.');
+    if (user.role !== ROLES.OWNER && t.requested_by !== user.user_id) throw new AppError(ERR.FORBIDDEN, 'Ini bukan permintaan Anda.');
+    return t;
+  }
+
+  function detail(user, taskId) {
+    var t = requireRequest(user, taskId);
+    var b = Repo.bundle();
+    var scope = Repo.supervisorScope(b);
+    var assetIds = {};
+    b.links.forEach(function (l) { if (l.entity_type === 'TASK' && l.entity_id === t.task_id) assetIds[l.asset_id] = true; });
+    var isOwner = user.role === ROLES.OWNER;
+    var pool = isOwner ? b.assets : scope.assets;
+    var assets = pool.filter(function (a) { return assetIds[a.asset_id]; })
+      .map(function (a) { return Repo.assetDto(a, b, isOwner ? { owner: true } : { supervisor: true, scope: scope }); });
+    return {
+      task: Repo.taskDto(t, b),
+      references: assets.filter(function (a) { return a.stage === 'REFERENCE'; }),
+      results: assets.filter(function (a) { return a.stage !== 'REFERENCE'; }),
+      activities: b.activities.filter(function (a) { return a.task_id === t.task_id && (isOwner || Permission.visibleToSupervisor(a)); })
+        .map(function (a) { return Repo.activityDto(a, b); }).sort(Repo.byDayDesc),
+      comments: b.reviews.filter(function (r) { return r.entity_type === 'TASK' && r.entity_id === t.task_id; })
+        .map(Repo.reviewDto).sort(function (x, y) { return x.createdAt < y.createdAt ? -1 : 1; })
+    };
+  }
+
+  return {
+    /** Atasan membuat permintaan → menjadi tugas pemilik. */
+    create: function (user, p) {
+      if (user.role !== ROLES.SUPERVISOR) throw new AppError(ERR.FORBIDDEN, 'Permintaan kerja dibuat oleh akun atasan.');
+      var links = readLinks(p.links);
+      var projectId = '';
+      if (p.projectId) {
+        var scope = Repo.supervisorScope(Repo.bundle());
+        if (!scope.projectIds[String(p.projectId)]) throw new AppError(ERR.VALIDATION, 'Proyek tidak ditemukan.');
+        projectId = String(p.projectId);
+      }
+      var t = TaskService.create(user, {
+        title: p.title, description: p.description, dueDate: p.dueDate, priority: p.priority || 'MEDIUM',
+        projectId: projectId, sharedWithSupervisor: true
+      });
+      Db.update('TASKS', 'task_id', t.taskId, { requested_by: user.user_id, requested_at: U.now(), reference_links: links.length ? JSON.stringify(links) : '' });
+      Audit.log(user, 'REQUEST_CREATED', 'TASKS', t.taskId, { title: t.title, links: links.length });
+      return detail(user, t.taskId);
+    },
+
+    /** Atasan melampirkan file referensi (satu file per panggilan, ≤ 10 MB). */
+    attach: function (user, p) {
+      var t = requireRequest(user, p.taskId);
+      if (user.role !== ROLES.SUPERVISOR) throw new AppError(ERR.FORBIDDEN, 'File referensi dilampirkan oleh atasan.');
+      AssetService.upload(user, {
+        fileName: p.fileName, mimeType: p.mimeType, dataBase64: p.dataBase64, thumbBase64: p.thumbBase64, thumbMime: p.thumbMime,
+        taskId: t.task_id, stage: 'REFERENCE', sharedWithSupervisor: true, description: 'Referensi dari atasan'
+      });
+      return detail(user, t.task_id);
+    },
+
+    /** Atasan: permintaan miliknya. Pemilik: semua permintaan. */
+    list: function (user) {
+      var b = Repo.bundle();
+      return b.tasks.filter(function (t) { return t.requested_by && (user.role === ROLES.OWNER || t.requested_by === user.user_id); })
+        .map(function (t) {
+          var d = Repo.taskDto(t, b);
+          d.resultCount = b.links.filter(function (l) {
+            if (l.entity_type !== 'TASK' || l.entity_id !== t.task_id) return false;
+            var a = b.assets.filter(function (x) { return x.asset_id === l.asset_id; })[0];
+            return a && a.purpose !== 'REFERENCE' && Permission.visibleToSupervisor(a);
+          }).length;
+          return d;
+        })
+        .sort(function (x, y) {
+          var dx = x.status === 'DONE' ? 1 : 0, dy = y.status === 'DONE' ? 1 : 0;
+          if (dx !== dy) return dx - dy;
+          return x.requestedAt < y.requestedAt ? 1 : -1;
+        });
+    },
+
+    get: function (user, p) { return detail(user, p.taskId); },
+
+    /** Komentar dua arah pada permintaan (atasan & pemilik). */
+    comment: function (user, p) {
+      var t = requireRequest(user, p.taskId);
+      var comment = U.required(p.comment, 'Komentar', 2, 2000);
+      var row = {
+        review_id: U.newId('REV'), entity_type: 'TASK', entity_id: t.task_id, reviewer_id: user.user_id, rating: 0,
+        comment: comment, status: user.role === ROLES.OWNER ? 'ACKNOWLEDGED' : 'OPEN', created_at: U.now(),
+        reviewer_name: user.display_name || user.email, entity_title: t.title, acknowledged_at: ''
+      };
+      Db.insert('REVIEW_LOG', row);
+      if (user.role === ROLES.OWNER) {
+        // Balasan pemilik menandai komentar atasan sebelumnya sudah dibaca
+        Db.all('REVIEW_LOG').filter(function (r) { return r.entity_type === 'TASK' && r.entity_id === t.task_id && r.status === 'OPEN'; })
+          .forEach(function (r) { Db.update('REVIEW_LOG', 'review_id', r.review_id, { status: 'ACKNOWLEDGED', acknowledged_at: U.now() }); });
+      }
+      return detail(user, t.task_id);
     }
   };
 })();
@@ -2627,18 +2994,19 @@ var ReportService = (function () {
     /** Simpan PDF ke Drive (03_REPORTS/<JENIS>). */
     exportPdf: function (user, p) {
       var r = requireReport(p.reportId);
-      var file;
+      var fileId;
       try {
         var blob = Utilities.newBlob(pdfHtml(r), 'text/html', r.report_id + '.html').getAs('application/pdf');
         blob.setName(r.title.replace(/[\\/:*?"<>|]+/g, '-') + '.pdf');
-        file = DriveService.reportFolder(r.type).createFile(blob);
+        var sub = r.type === 'DAILY' ? 'DAILY' : r.type === 'MONTHLY' ? 'MONTHLY' : 'WEEKLY';
+        fileId = StorageService.put(['03_REPORTS', sub], blob, function () { return DriveService.reportFolder(r.type); });
       } catch (e) {
         if (e instanceof AppError) throw e;
         throw new AppError(ERR.INTERNAL, 'PDF gagal dibuat di Google Drive. Coba lagi.');
       }
-      Db.update('REPORTS', 'report_id', r.report_id, { drive_file_id: file.getId(), updated_at: U.now() });
+      Db.update('REPORTS', 'report_id', r.report_id, { drive_file_id: fileId, updated_at: U.now() });
       Audit.log(user, 'REPORT_PDF', 'REPORTS', r.report_id, null);
-      return { url: 'https://drive.google.com/file/d/' + file.getId() + '/view', reportId: r.report_id };
+      return { url: 'https://drive.google.com/file/d/' + fileId + '/view', reportId: r.report_id };
     }
   };
 })();
@@ -2687,7 +3055,7 @@ var ReviewService = (function () {
     /** Daftar feedback. Atasan: hanya feedback pada entitas yang terlihat olehnya. */
     list: function (user, p) {
       p = p || {};
-      var rows = Db.all('REVIEW_LOG');
+      var rows = Db.all('REVIEW_LOG').filter(function (r) { return r.entity_type !== 'TASK'; });
       if (p.entityType) rows = rows.filter(function (r) { return r.entity_type === String(p.entityType); });
       if (p.entityId) rows = rows.filter(function (r) { return r.entity_id === String(p.entityId); });
       if (user.role !== ROLES.OWNER) {
@@ -2872,7 +3240,11 @@ var DashboardService = (function () {
           hoursThisWeek: Math.round(minutesSince(b, b.activities, weekStart) / 6) / 10,
           tasksDoneThisWeek: doneWeek.length,
           openTasks: openTasks.length,
-          feedbackOpen: reviews.filter(function (r) { return r.status === 'OPEN'; }).length
+          feedbackOpen: reviews.filter(function (r) { return r.status === 'OPEN' && r.entityType !== 'TASK'; }).length,
+          // permintaan atasan yang belum dimulai, atau ada komentar atasan yang belum dibalas
+          requestsNew: b.tasks.filter(function (t) {
+            return t.requested_by && (t.status === 'TODO' || reviews.some(function (r) { return r.entityType === 'TASK' && r.entityId === t.task_id && r.status === 'OPEN'; }));
+          }).length
         },
         todayTasks: todayTasks.map(dto).sort(Repo.taskSort).slice(0, 8),
         overdueTasks: overdue.map(dto).sort(Repo.taskSort).slice(0, 8),
@@ -2940,11 +3312,7 @@ var DashboardService = (function () {
       var rootId = Props.get('DRIVE_ROOT_ID');
       var backups = [];
       try {
-        var it = DriveService.backupFolder().getFiles();
-        while (it.hasNext() && backups.length < 50) {
-          var f = it.next();
-          backups.push({ name: f.getName(), url: f.getUrl(), createdAt: U.toIso(f.getDateCreated()) });
-        }
+        backups = StorageService.listFiles(['05_SYSTEM_BACKUP'], function () { return DriveService.backupFolder(); }, 50);
       } catch (e) { backups = []; }
       backups.sort(function (a, b) { return a.createdAt < b.createdAt ? 1 : -1; });
       return {
@@ -2956,7 +3324,8 @@ var DashboardService = (function () {
         driveUrl: rootId ? 'https://drive.google.com/drive/folders/' + rootId : '',
         sheetCount: Object.keys(SCHEMA).length,
         userCount: Db.all('USERS').length,
-        backups: backups.slice(0, 5)
+        backups: backups.slice(0, 5),
+        storageLabel: StorageService.activeLabel()
       };
     },
 
@@ -2965,11 +3334,12 @@ var DashboardService = (function () {
       var ssId = Props.get('SPREADSHEET_ID');
       var name = 'MCMS Backup ' + Utilities.formatDate(new Date(), U.timezone(), 'yyyy-MM-dd HHmm');
       var copy;
-      try { copy = DriveApp.getFileById(ssId).makeCopy(name, DriveService.backupFolder()); } catch (e) {
+      try { copy = StorageService.copySpreadsheet(ssId, ['05_SYSTEM_BACKUP'], name, function () { return DriveService.backupFolder(); }); } catch (e) {
+        if (e instanceof AppError) throw e;
         throw new AppError(ERR.INTERNAL, 'Backup gagal dibuat di Google Drive. Coba lagi.');
       }
-      Audit.log(user, 'BACKUP_CREATED', 'SYSTEM', copy.getId(), { name: name });
-      return { name: name, url: copy.getUrl() };
+      Audit.log(user, 'BACKUP_CREATED', 'SYSTEM', copy.id, { name: name });
+      return { name: name, url: copy.url };
     }
   };
 })();
@@ -3006,6 +3376,10 @@ var ROUTES = {
 
   'settings.system':    { permission: 'settings.system', handler: function () { return DashboardService.systemInfo(); } },
   'system.backup':      { permission: 'data.backup', write: true, handler: function (p, user) { return DashboardService.backup(user); } },
+  'storage.list':       { permission: 'settings.system', handler: function () { return StorageService.list(); } },
+  'storage.add':        { permission: 'settings.system', write: true, handler: function (p, user) { return StorageService.add(user, p); } },
+  'storage.activate':   { permission: 'settings.system', write: true, handler: function (p, user) { return StorageService.activate(user, p); } },
+  'storage.remove':     { permission: 'settings.system', write: true, handler: function (p, user) { return StorageService.remove(user, p); } },
 
   // ---------- Data master ----------
   'categories.list':    { permission: 'profile.self', handler: function () { return CategoryService.list(); } },
@@ -3058,6 +3432,13 @@ var ROUTES = {
   'reviews.create':     { permission: 'feedback.create', write: true, handler: function (p, user) { return ReviewService.create(user, p); } },
   'reviews.acknowledge': { permission: 'feedback.manage', write: true, handler: function (p, user) { return ReviewService.acknowledge(user, p); } },
 
+  // ---------- Permintaan kerja dari atasan ----------
+  'requests.create':    { permission: 'request.create', write: true, handler: function (p, user) { return RequestService.create(user, p); } },
+  'requests.attach':    { permission: 'request.create', write: true, handler: function (p, user) { return RequestService.attach(user, p); } },
+  'requests.list':      { permission: 'request.view', handler: function (p, user) { return RequestService.list(user); } },
+  'requests.get':       { permission: 'request.view', handler: function (p, user) { return RequestService.get(user, p); } },
+  'requests.comment':   { permission: 'request.view', write: true, handler: function (p, user) { return RequestService.comment(user, p); } },
+
   // ---------- Mode Atasan (selalu scope SUPERVISOR) ----------
   'exec.projects':      { permission: 'project.view', handler: function () { return ExecService.projects(); } },
   'exec.project':       { permission: 'project.view', handler: function (p, user) { return ExecService.project(user, p); } },
@@ -3092,6 +3473,9 @@ var SUCCESS_MESSAGES = {
   'users.reactivate': 'Akun diaktifkan kembali.',
   'account.updateProfile': 'Profil disimpan.',
   'system.backup': 'Backup berhasil dibuat di Google Drive.',
+  'storage.add': 'Penyimpanan ditambahkan.',
+  'storage.activate': 'Penyimpanan aktif diganti.',
+  'storage.remove': 'Penyimpanan dihapus dari daftar.',
   'categories.save': 'Kategori disimpan.',
   'projects.create': 'Proyek berhasil dibuat.',
   'projects.update': 'Proyek diperbarui.',
@@ -3113,7 +3497,10 @@ var SUCCESS_MESSAGES = {
   'reports.remove': 'Laporan dihapus.',
   'reports.exportPdf': 'PDF tersimpan di Google Drive.',
   'reviews.create': 'Feedback terkirim. Terima kasih!',
-  'reviews.acknowledge': 'Feedback ditandai sudah dibaca.'
+  'reviews.acknowledge': 'Feedback ditandai sudah dibaca.',
+  'requests.create': 'Permintaan terkirim dan masuk ke daftar tugas Media Center.',
+  'requests.attach': 'File referensi terlampir.',
+  'requests.comment': 'Komentar terkirim.'
 };
 
 function handleRequest_(rawBody) {

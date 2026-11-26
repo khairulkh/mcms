@@ -841,7 +841,7 @@
   PAGES.settings = function (main, sub) {
     var owner = state.me.role === 'OWNER';
     var tabs = owner
-      ? [['branding', 'palette', 'Logo & identitas'], ['accounts', 'users', 'Akun & atasan'], ['categories', 'tag', 'Kategori'], ['profile', 'user', 'Profil'], ['system', 'server', 'Sistem & data']]
+      ? [['branding', 'palette', 'Logo & identitas'], ['accounts', 'users', 'Akun & atasan'], ['categories', 'tag', 'Kategori'], ['profile', 'user', 'Profil'], ['storage', 'database', 'Penyimpanan'], ['system', 'server', 'Sistem & data']]
       : [['profile', 'user', 'Profil']];
     var ids = tabs.map(function (t) { return t[0]; });
     if (ids.indexOf(sub) < 0) sub = ids[0];
@@ -851,7 +851,7 @@
         return '<a class="tab" role="tab" href="#/settings/' + t[0] + '" aria-selected="' + (t[0] === sub) + '">' + icon(t[1]) + esc(t[2]) + '</a>';
       }).join('') + '</div><div id="settings-body" role="tabpanel"></div></div>';
     var body = $('#settings-body');
-    ({ branding: settingsBranding, accounts: settingsAccounts, profile: settingsProfile, system: settingsSystem, categories: function (b) { MC.settingsCategories(b); } })[sub](body);
+    ({ branding: settingsBranding, accounts: settingsAccounts, profile: settingsProfile, system: settingsSystem, categories: function (b) { MC.settingsCategories(b); }, storage: function (b) { MC.settingsStorage(b); } })[sub](body);
   };
 
   /* ----- Branding ----- */
@@ -1304,6 +1304,7 @@
     switchMode: switchMode, setNavBadge: setNavBadge, route: route, parseRoute: parseRoute,
     create: function () { toast('Modul belum dimuat.', 'error'); },
     settingsCategories: function () {},
+    settingsStorage: function () {},
     boot: boot
   };
   document.addEventListener('keydown', function (e) {
@@ -3486,6 +3487,105 @@
         MC.setLoading(btn, true);
         MC.api('categories.save', { name: v.name, color: colorOf(form) }).then(function (list) { MC.toast('Kategori ditambahkan.'); MC.invalidate(); draw(list); },
           function (er) { MC.setLoading(btn, false); MC.formAlert(form, er.message); });
+      });
+    }
+  };
+
+  /* =========================================================
+     Penyimpanan: ganti Google Drive tempat file baru disimpan,
+     tanpa memindahkan atau mereset data.
+     ========================================================= */
+  function gb(b) {
+    if (!b) return '0 GB';
+    var g = b / 1073741824;
+    return (g >= 10 ? Math.round(g) : Math.round(g * 10) / 10).toString().replace('.', ',') + ' GB';
+  }
+
+  MC.settingsStorage = function (body) {
+    body.innerHTML = MC.loadingBox(200);
+    MC.api('storage.list', {}).then(draw, function (e) { MC.errorState(body, e, function () { MC.settingsStorage(body); }); });
+
+    function quota(it) {
+      if (it.used === null || it.used === undefined || !it.limit) return '<span class="hint">Kuota tidak terbaca</span>';
+      var pct = Math.min(100, Math.round(it.used / it.limit * 100));
+      return '<div class="progress-row"><div class="progress' + (pct >= 90 ? ' progress-danger' : '') + '" role="progressbar" aria-valuenow="' + pct + '" aria-valuemin="0" aria-valuemax="100" aria-label="Kuota terpakai">' +
+        '<span style="width:' + pct + '%"></span></div><span class="pct">' + pct + '%</span></div>' +
+        '<div class="hint">' + esc(gb(it.used)) + ' dari ' + esc(gb(it.limit)) + ' terpakai · sisa ' + esc(gb(Math.max(0, it.limit - it.used))) + '</div>';
+    }
+
+    function draw(d) {
+      var activeItem = d.items.filter(function (x) { return x.active; })[0] || d.items[0];
+      body.innerHTML = '<div class="grid grid-2">' +
+        '<section class="card"><div class="card-head"><div><h2>Tempat penyimpanan file</h2><p>File baru disimpan di: <strong>' + esc(activeItem.label) + '</strong></p></div></div><div class="card-body flush"><ul class="list">' +
+        d.items.map(function (it) {
+          var acts = '';
+          if (it.folderUrl && MC.safeHttps(it.folderUrl)) acts += '<a class="btn btn-ghost btn-sm" target="_blank" rel="noopener" href="' + esc(it.folderUrl) + '">' + icon('external') + 'Folder</a>';
+          if (!it.active && it.online) acts += '<button class="btn btn-secondary btn-sm" type="button" data-act="' + esc(it.id) + '">' + icon('check') + 'Jadikan aktif</button>';
+          if (!it.main && !it.active) acts += '<button class="btn btn-ghost btn-sm" type="button" data-del="' + esc(it.id) + '" aria-label="Hapus ' + esc(it.label) + ' dari daftar">' + icon('trash') + '</button>';
+          return '<li class="list-item" style="align-items:flex-start;flex-wrap:wrap"><span class="dot-ico">' + icon(it.main ? 'folder' : 'database') + '</span>' +
+            '<div class="main" style="min-width:200px"><div class="title">' + esc(it.label) + ' ' +
+            (it.active ? '<span class="badge badge-success">' + icon('checkCircle') + 'Aktif</span>' : '') +
+            (!it.online ? '<span class="badge badge-danger">Tidak terhubung</span>' : '') + '</div>' +
+            '<div class="meta">' + esc(it.email || '—') + '</div>' +
+            (it.online ? quota(it) : '<div class="hint">' + esc(it.error || 'Simpul tidak menjawab.') + '</div>') + '</div>' +
+            '<div style="display:flex;gap:6px;flex-wrap:wrap">' + acts + '</div></li>';
+        }).join('') + '</ul></div></section>' +
+        '<section class="card"><div class="card-head"><div><h2>Drive penuh? Tambah penyimpanan</h2><p>Gratis, pakai akun Google lain (15 GB)</p></div></div><div class="card-body">' +
+        '<div class="alert alert-info" style="margin-bottom:14px">' + icon('shield') + '<div>Database dan isi web tidak direset. File lama tetap di tempatnya dan tetap bisa dibuka. Hanya file baru (unggahan, logo, PDF laporan, backup) yang masuk ke penyimpanan aktif.</div></div>' +
+        '<ol class="steps-list" style="padding-left:20px;display:grid;gap:8px;margin:0 0 16px">' +
+        '<li>Masuk ke akun Google yang Drive-nya masih kosong, buka <a href="https://script.google.com/home" target="_blank" rel="noopener">script.google.com</a>, klik <strong>Project baru</strong>.</li>' +
+        '<li>Tempel skrip simpul penyimpanan (tombol di bawah), simpan.</li>' +
+        '<li>Jalankan fungsi <code>siapkanPenyimpanan</code>, izinkan akses, lalu salin <strong>KODE RAHASIA</strong> dari Log eksekusi.</li>' +
+        '<li><strong>Terapkan › Deployment baru › Aplikasi web</strong>: Jalankan sebagai <em>Saya</em>, akses <em>Siapa saja</em>. Salin URL-nya.</li>' +
+        '<li>Klik <strong>Tambah penyimpanan</strong>, tempel URL dan kode rahasia, lalu <strong>Jadikan aktif</strong>.</li></ol>' +
+        '<div style="display:flex;gap:10px;flex-wrap:wrap"><button class="btn btn-secondary" type="button" id="stg-copy">' + icon('copy') + 'Salin skrip simpul</button>' +
+        '<button class="btn btn-primary" type="button" id="stg-add">' + icon('plus') + 'Tambah penyimpanan</button></div></div></section></div>';
+
+      $('#stg-copy').addEventListener('click', function (e) {
+        var btn = e.currentTarget;
+        MC.setLoading(btn, true);
+        fetch('storage-node/Code.gs', { cache: 'no-store' }).then(function (r) { if (!r.ok) throw new Error(); return r.text(); })
+          .then(function (txt) { return navigator.clipboard.writeText(txt); })
+          .then(function () { MC.setLoading(btn, false); MC.toast('Skrip disalin. Tempel di Code.gs project baru.'); },
+            function () { MC.setLoading(btn, false); window.open('storage-node/Code.gs', '_blank', 'noopener'); MC.toast('Skrip dibuka di tab baru. Salin seluruh isinya.'); });
+      });
+      $('#stg-add').addEventListener('click', addDialog);
+      $$('[data-act]', body).forEach(function (b) {
+        b.addEventListener('click', function () {
+          var it = d.items.filter(function (x) { return x.id === b.getAttribute('data-act'); })[0];
+          MC.confirmDialog({ title: 'Jadikan "' + it.label + '" aktif?', message: 'Mulai sekarang file baru disimpan di Drive ' + (it.email || it.label) + '. Data dan file lama tidak berubah.', confirmText: 'Jadikan aktif', icon: 'database' })
+            .then(function (yes) {
+              if (!yes) return;
+              MC.setLoading(b, true);
+              MC.api('storage.activate', { id: it.id }).then(function (nd) { MC.toast('File baru sekarang disimpan di ' + it.label + '.'); draw(nd); },
+                function (er) { MC.setLoading(b, false); MC.toast(er.message, 'error'); });
+            });
+        });
+      });
+      $$('[data-del]', body).forEach(function (b) {
+        b.addEventListener('click', function () {
+          var it = d.items.filter(function (x) { return x.id === b.getAttribute('data-del'); })[0];
+          MC.confirmDialog({ title: 'Hapus "' + it.label + '" dari daftar?', message: 'File yang sudah tersimpan di Drive itu tidak dihapus dan tetap bisa dibuka dari arsip. MCMS hanya berhenti memakai penyimpanan ini.', danger: true, confirmText: 'Hapus dari daftar', icon: 'trash' })
+            .then(function (yes) {
+              if (!yes) return;
+              MC.api('storage.remove', { id: it.id }).then(function (nd) { MC.toast('Penyimpanan dihapus dari daftar.'); draw(nd); }, function (er) { MC.toast(er.message, 'error'); });
+            });
+        });
+      });
+    }
+
+    function addDialog() {
+      MC.formDialog({
+        title: 'Tambah penyimpanan', icon: 'database', submitText: 'Hubungkan', submitIcon: 'link',
+        sub: 'Pakai akun Google lain yang Drive-nya masih kosong.',
+        body: MC.field({ name: 'label', label: 'Nama', required: true, maxlength: 40, placeholder: 'Contoh: Drive cadangan 2027', full: true }) +
+          MC.field({ name: 'url', label: 'URL aplikasi web simpul', required: true, type: 'url', placeholder: 'https://script.google.com/macros/s/…/exec', full: true, autocomplete: 'off' }) +
+          MC.field({ name: 'secret', label: 'Kode rahasia', required: true, type: 'password', full: true, autocomplete: 'off', hint: 'Dari Log eksekusi fungsi siapkanPenyimpanan. Disimpan di server, tidak ditampilkan lagi.' }),
+        onSubmit: function (form) {
+          var v = MC.validate(form, [['label', 'required', 'Nama minimal 2 karakter.', 2], ['url', 'required', 'Tempel URL aplikasi web.', 20], ['secret', 'required', 'Tempel kode rahasia.', 32]]);
+          if (!v) return null;
+          return MC.api('storage.add', v).then(function (d) { MC.closeOverlay(); MC.toast('Penyimpanan "' + v.label + '" terhubung. Klik "Jadikan aktif" untuk memakainya.'); draw(d); });
+        }
       });
     }
   };

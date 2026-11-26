@@ -840,7 +840,7 @@
   PAGES.settings = function (main, sub) {
     var owner = state.me.role === 'OWNER';
     var tabs = owner
-      ? [['branding', 'palette', 'Logo & identitas'], ['accounts', 'users', 'Akun & atasan'], ['categories', 'tag', 'Kategori'], ['profile', 'user', 'Profil'], ['system', 'server', 'Sistem & data']]
+      ? [['branding', 'palette', 'Logo & identitas'], ['accounts', 'users', 'Akun & atasan'], ['categories', 'tag', 'Kategori'], ['profile', 'user', 'Profil'], ['storage', 'database', 'Penyimpanan'], ['system', 'server', 'Sistem & data']]
       : [['profile', 'user', 'Profil']];
     var ids = tabs.map(function (t) { return t[0]; });
     if (ids.indexOf(sub) < 0) sub = ids[0];
@@ -850,7 +850,7 @@
         return '<a class="tab" role="tab" href="#/settings/' + t[0] + '" aria-selected="' + (t[0] === sub) + '">' + icon(t[1]) + esc(t[2]) + '</a>';
       }).join('') + '</div><div id="settings-body" role="tabpanel"></div></div>';
     var body = $('#settings-body');
-    ({ branding: settingsBranding, accounts: settingsAccounts, profile: settingsProfile, system: settingsSystem, categories: function (b) { MC.settingsCategories(b); } })[sub](body);
+    ({ branding: settingsBranding, accounts: settingsAccounts, profile: settingsProfile, system: settingsSystem, categories: function (b) { MC.settingsCategories(b); }, storage: function (b) { MC.settingsStorage(b); } })[sub](body);
   };
 
   /* ----- Branding ----- */
@@ -1303,6 +1303,7 @@
     switchMode: switchMode, setNavBadge: setNavBadge, route: route, parseRoute: parseRoute,
     create: function () { toast('Modul belum dimuat.', 'error'); },
     settingsCategories: function () {},
+    settingsStorage: function () {},
     boot: boot
   };
   document.addEventListener('keydown', function (e) {
