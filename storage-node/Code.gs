@@ -11,10 +11,14 @@
  *     Salin URL aplikasi web (berakhiran /exec).
  *  5. Di MCMS: Pengaturan > Penyimpanan > Tambah penyimpanan, tempel URL dan kode rahasia, lalu "Jadikan aktif".
  *
+ * Memperbarui simpul lama (untuk unggah file besar): ganti isi Code.gs dengan file ini, simpan, jalankan
+ * siapkanPenyimpanan sekali (izinkan akses baru "terhubung ke layanan eksternal"), lalu
+ * Terapkan > Kelola deployment > Edit > Versi baru. URL dan kode rahasia tetap sama.
+ *
  * Simpul ini hanya membuat file di dalam folder "MCMS Penyimpanan" miliknya, dan hanya menerima
  * permintaan yang membawa kode rahasia. Folder itu otomatis dibagikan (Editor) ke akun pemilik MCMS.
  */
-var NODE_VERSION = '1.0.0';
+var NODE_VERSION = '1.1.0';
 var MAX_BYTES = 12 * 1024 * 1024;
 
 function props_() { return PropertiesService.getScriptProperties(); }
@@ -82,6 +86,7 @@ function doPost(e) {
       case 'put': return json_(put_(b));
       case 'copy': return json_(copy_(b));
       case 'list': return json_(list_(b));
+      case 'upStart': return json_(upStart_(b));
       default: return json_({ ok: false, error: 'Perintah tidak dikenal.' });
     }
   } catch (err) {
@@ -117,6 +122,29 @@ function copy_(b) {
   var src = DriveApp.getFileById(String(b.fileId || ''));
   var c = src.makeCopy(String(b.name || 'Salinan').slice(0, 150), folderAt_(b.path));
   return { ok: true, id: c.getId(), url: c.getUrl() };
+}
+
+/**
+ * Membuka sesi unggah bertahap (resumable) Google Drive untuk file besar. File dibuat oleh akun simpul ini
+ * (memakai kuotanya). Backend MCMS lalu mengirim potongan file langsung ke URI sesi tersebut.
+ */
+function upStart_(b) {
+  var size = Math.floor(Number(b.size) || 0);
+  if (size <= 0) return { ok: false, error: 'Ukuran file tidak valid.' };
+  var name = String(b.name || 'file').replace(/[\\/:*?"<>|]+/g, '_').slice(0, 150);
+  var mime = String(b.mime || 'application/octet-stream');
+  var res = UrlFetchApp.fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&supportsAllDrives=true&fields=id', {
+    method: 'post', contentType: 'application/json; charset=UTF-8', muteHttpExceptions: true, followRedirects: false,
+    headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken(), 'X-Upload-Content-Type': mime, 'X-Upload-Content-Length': String(size) },
+    payload: JSON.stringify({ name: name, mimeType: mime, parents: [folderAt_(b.path).getId()] })
+  });
+  var h = res.getAllHeaders() || {};
+  var uri = '';
+  for (var k in h) if (k.toLowerCase() === 'location') uri = String(h[k]);
+  if (res.getResponseCode() !== 200 || !uri) {
+    return { ok: false, error: res.getResponseCode() === 403 ? 'Drive simpul menolak unggahan (kuota penuh?).' : 'Sesi unggah tidak bisa dibuka (' + res.getResponseCode() + ').' };
+  }
+  return { ok: true, uri: uri };
 }
 
 function list_(b) {

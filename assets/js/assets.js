@@ -4,7 +4,9 @@
 (function (MC) {
   'use strict';
   var $ = MC.$, $$ = MC.$$, esc = MC.esc, icon = MC.icon;
-  var MAX_BYTES = MC.DEMO ? 2 * 1024 * 1024 : 10 * 1024 * 1024;
+  // ≤ 10 MB: satu permintaan. Lebih besar: unggah bertahap per potongan langsung ke Google Drive (hingga 2 GB).
+  var SINGLE_MAX = 10 * 1024 * 1024;
+  var MAX_BYTES = MC.DEMO ? 2 * 1024 * 1024 : 2 * 1024 * 1024 * 1024;
   var STAGES = [['EVIDENCE', 'Bukti kerja'], ['BRIEF', 'Brief / bahan'], ['WORKING', 'File kerja (draft)'], ['REVIEW', 'Untuk review'], ['FINAL', 'Hasil final']];
   var STAGE_LABEL = {}; STAGES.forEach(function (s) { STAGE_LABEL[s[0]] = s[1]; }); STAGE_LABEL.OTHER = 'Lainnya';
 
@@ -27,9 +29,9 @@
           '<div class="field full" id="u-file-box"><div class="uploader" id="u-zone"><input type="file" id="u-input" multiple class="sr-only" ' +
           'accept="image/*,video/*,audio/*,application/pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.psd,.ai,.zip,.txt,.csv">' +
           '<label for="u-input" class="uploader-label">' + icon('upload') + '<span><strong>Pilih file</strong> atau seret ke sini</span>' +
-          '<span class="hint">Foto, video pendek, PDF, dokumen, desain · maks ' + MC.fmtSize(MAX_BYTES) + ' per file' + (MC.DEMO ? ' (demo)' : '') + '</span></label></div>' +
+          '<span class="hint">Foto, video, PDF, dokumen, desain · maks ' + MC.fmtSize(MAX_BYTES) + ' per file' + (MC.DEMO ? ' (demo)' : '') + '</span></label></div>' +
           '<ul class="upload-list" id="u-list" aria-live="polite"></ul>' +
-          '<p class="hint">Video lebih dari ' + MC.fmtSize(MAX_BYTES) + '? Unggah langsung ke Google Drive, lalu pilih <b>Tautkan dari Drive</b>.</p></div>' +
+          '<p class="hint">File besar diunggah bertahap. Biarkan jendela ini terbuka sampai selesai.</p></div>' +
           '<div class="field full" id="u-link-box" hidden>' +
           MC.field({ name: 'url', label: 'Tautan file Google Drive', placeholder: 'https://drive.google.com/file/d/…/view', full: true, hint: 'Di Drive: klik kanan file → Bagikan → Salin link. File harus milik/terbagi ke akun pemilik.' }) +
           MC.field({ name: 'fileName', label: 'Nama tampilan', placeholder: 'Kosongkan untuk memakai nama file di Drive', full: true }) + '</div>' +
@@ -81,7 +83,7 @@
         var ul = $('#u-list', form);
         ul.innerHTML = files.map(function (x, i) {
           var st = x.state === 'error' ? '<span class="due due-danger">' + icon('alert', 'width="13" height="13"') + esc(x.err) + '</span>'
-            : x.state === 'uploading' ? '<span class="due due-info"><span class="spinner" aria-hidden="true"></span>Mengunggah…</span>'
+            : x.state === 'uploading' ? '<span class="due due-info"><span class="spinner" aria-hidden="true"></span>Mengunggah…' + (x.pct != null ? ' ' + x.pct + '%' : '') + '</span>'
               : x.state === 'done' ? '<span class="due due-success">' + icon('check', 'width="13" height="13"') + 'Tersimpan</span>'
                 : '<span class="hint">' + MC.fmtSize(x.file.size) + '</span>';
           return '<li class="upload-item"><span class="dot-ico">' + icon(/^image\//.test(x.file.type) ? 'image' : /^video\//.test(x.file.type) ? 'video' : 'file') + '</span>' +
@@ -99,6 +101,9 @@
           chain = chain.then(function () {
             x.state = 'uploading'; drawList();
             // Thumbnail kecil dibuat di browser → pratinjau ringan tanpa memuat file asli
+            if (x.file.size > SINGLE_MAX) {
+              return MC.uploadLarge(x.file, base, function (pct) { x.pct = pct; drawList(); });
+            }
             return Promise.all([MC.fileToBase64(x.file), MC.makeThumb(x.file)]).then(function (r) {
               var th = r[1];
               return MC.api('assets.upload', Object.assign({ fileName: x.file.name, mimeType: x.file.type || 'application/octet-stream', dataBase64: r[0],
@@ -119,6 +124,43 @@
         });
       }
     }, function (e) { MC.toast(e.message, 'error'); });
+  };
+
+  /**
+   * Unggah bertahap untuk file besar: buka sesi, lalu kirim potongan berurutan (default 8 MB).
+   * Potongan yang gagal karena jaringan dicoba ulang hingga 4 kali; server melewati potongan yang sudah diterima.
+   * onProgress(persen). Mengembalikan aset yang tersimpan.
+   */
+  MC.uploadLarge = function (file, base, onProgress) {
+    var mime = file.type || 'application/octet-stream';
+    return MC.makeThumb(file).catch(function () { return null; }).then(function (th) {
+      return MC.api('assets.uploadStart', Object.assign({ fileName: file.name, mimeType: mime, size: file.size }, base)).then(function (s) {
+        var chunk = s.chunkSize, size = file.size;
+        function send(offset, tries) {
+          var end = Math.min(offset + chunk, size), last = end === size;
+          return MC.fileToBase64(file.slice(offset, end)).then(function (data) {
+            var p = { uploadId: s.uploadId, offset: offset, dataBase64: data };
+            if (last && th) { p.thumbBase64 = th.data; p.thumbMime = th.mime; }
+            return MC.api('assets.uploadChunk', p);
+          }).then(function (r) {
+            if (onProgress) onProgress(Math.min(100, Math.floor(r.received * 100 / size)));
+            if (r.done) {
+              if (th) MC.thumbPut(r.asset.assetId, 'data:' + th.mime + ';base64,' + th.data);
+              return r.asset;
+            }
+            return send(r.received, 0);
+          }, function (e) {
+            if (e && e.code === 'CONFLICT' && e.data && e.data.received >= 0 && tries < 4) return send(e.data.received, tries + 1);
+            if (e && (e.code === 'NETWORK' || e.code === 'TIMEOUT' || e.code === 'BUSY' || e.code === 'INTERNAL') && tries < 4) {
+              return new Promise(function (r) { setTimeout(r, 2000 * (tries + 1)); }).then(function () { return send(offset, tries + 1); });
+            }
+            throw e;
+          });
+        }
+        if (onProgress) onProgress(0);
+        return send(0, 0);
+      });
+    });
   };
 
   /* =================== Pratinjau aset =================== */

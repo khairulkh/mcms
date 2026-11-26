@@ -135,7 +135,8 @@
     var body = JSON.stringify({ action: action, payload: payload || {}, token: state.session ? state.session.token : '' });
     if (DEMO) return window.MCMSDemo.call(body);
     var ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
-    var timer = setTimeout(function () { if (ctrl) ctrl.abort(); }, 45000);
+    // Potongan unggah bertahap (±11 MB) butuh waktu lebih lama di koneksi lambat
+    var timer = setTimeout(function () { if (ctrl) ctrl.abort(); }, action === 'assets.uploadChunk' ? 180000 : 45000);
     // text/plain = "simple request" → tidak memicu preflight CORS yang tidak didukung Apps Script
     return fetch(CFG.API_URL, {
       method: 'POST', redirect: 'follow', body: body, signal: ctrl ? ctrl.signal : undefined,
@@ -157,6 +158,7 @@
       if (!json || json.success !== true) {
         var code = json && json.errorCode ? json.errorCode : 'INTERNAL';
         var err = new ApiError(code, (json && json.message) || 'Terjadi kesalahan.');
+        err.data = json ? json.data : null;
         if (code === 'UNAUTHENTICATED' && action.indexOf('auth.') !== 0 && state.session) handleSessionExpired(err.message);
         throw err;
       }
