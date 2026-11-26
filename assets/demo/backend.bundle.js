@@ -686,7 +686,17 @@ var Db = (function () {
     insert: function (name, obj) {
       var t = load(name);
       var row = toRow(t.headers, obj);
-      t.sheet.appendRow(row);
+      // Tulis ke baris kosong berikutnya (bukan appendRow): Google menolak penambahan baris baru pada
+      // spreadsheet milik akun yang Drive-nya hampir penuh, sedangkan menulis ke baris kosong yang sudah ada tetap bisa.
+      var sh = t.sheet;
+      var r = sh.getLastRow() + 1;
+      if (r > sh.getMaxRows()) {
+        try { sh.insertRowsAfter(sh.getMaxRows(), 500); } catch (e) {
+          throw new AppError(ERR.INTERNAL, 'Database penuh dan Google menolak menambah baris (Drive utama hampir penuh). ' +
+            'Kosongkan ruang di Drive akun pemilik, lalu coba lagi.');
+        }
+      }
+      sh.getRange(r, 1, 1, row.length).setValues([row]);
       delete _memo[name];
       return obj;
     },
@@ -1726,12 +1736,18 @@ var DriveUpload = (function () {
     return '';
   }
 
+  /** Origin web MCMS di header pembuka sesi: Google mengizinkan CORS dari origin itu saat browser mengirim potongan. */
+  function originHeaders(h, origin) {
+    if (/^https:\/\/[A-Za-z0-9.-]+(:\d+)?$/.test(String(origin || ''))) h.Origin = origin;
+    return h;
+  }
+
   return {
     /** Membuka sesi unggah. Mengembalikan URI sesi. */
-    start: function (token, folderId, name, mime, size) {
+    start: function (token, folderId, name, mime, size, origin) {
       var res = UrlFetchApp.fetch(START_URL, {
         method: 'post', contentType: 'application/json; charset=UTF-8', muteHttpExceptions: true, followRedirects: false,
-        headers: { Authorization: 'Bearer ' + token, 'X-Upload-Content-Type': mime, 'X-Upload-Content-Length': String(size) },
+        headers: originHeaders({ Authorization: 'Bearer ' + token, 'X-Upload-Content-Type': mime, 'X-Upload-Content-Length': String(size) }, origin),
         payload: JSON.stringify({ name: name, mimeType: mime, parents: [folderId] })
       });
       var uri = header(res, 'Location');
@@ -1750,10 +1766,16 @@ var DriveUpload = (function () {
      */
     put: function (uri, bytes, offset, size) {
       var end = offset + bytes.length - 1;
-      var res = UrlFetchApp.fetch(uri, {
-        method: 'put', contentType: 'application/octet-stream', muteHttpExceptions: true, followRedirects: false,
-        headers: { 'Content-Range': 'bytes ' + offset + '-' + end + '/' + size }, payload: bytes
-      });
+      var res;
+      try {
+        res = UrlFetchApp.fetch(uri, {
+          method: 'put', contentType: 'application/octet-stream', muteHttpExceptions: true, followRedirects: false,
+          headers: { 'Content-Range': 'bytes ' + offset + '-' + end + '/' + size }, payload: bytes
+        });
+      } catch (e) {
+        console.error('Potongan unggah gagal (fetch): ' + (e && e.message));
+        throw new AppError(ERR.INTERNAL, 'Potongan file gagal dikirim ke Google Drive (' + String(e && e.message || e).slice(0, 200) + '). Coba lagi.');
+      }
       var code = res.getResponseCode();
       if (code === 200 || code === 201) {
         var j = null;
@@ -2284,12 +2306,12 @@ var StorageService = (function () {
      * Drive utama memakai token akun pemilik; simpul membuka sesinya sendiri sehingga file memakai kuota simpul.
      * Mengembalikan { uri, storageId }. URI sesi hanya disimpan di server (cache), tidak dikirim ke browser.
      */
-    resumableStart: function (pathNames, name, mime, size, mainFolder) {
+    resumableStart: function (pathNames, name, mime, size, mainFolder, origin) {
       var n = activeNode();
       if (n) {
         var j;
         try {
-          j = call(n, 'upStart', { path: cleanPath(pathNames), name: name, mime: mime, size: size });
+          j = call(n, 'upStart', { path: cleanPath(pathNames), name: name, mime: mime, size: size, origin: origin || '' });
         } catch (e) {
           if (/Perintah tidak dikenal/.test(e.message)) {
             throw new AppError(ERR.VALIDATION, 'Penyimpanan "' + n.label + '" perlu diperbarui agar bisa menerima file besar. ' +
@@ -2303,7 +2325,7 @@ var StorageService = (function () {
         return { uri: String(j.uri), storageId: n.id };
       }
       var folderId = (mainFolder ? mainFolder() : DriveService.path(pathNames)).getId();
-      return { uri: DriveUpload.start(ScriptApp.getOAuthToken(), folderId, name, mime, size), storageId: MAIN_ID };
+      return { uri: DriveUpload.start(ScriptApp.getOAuthToken(), folderId, name, mime, size, origin), storageId: MAIN_ID };
     },
 
     /** Salinan spreadsheet (backup). Mengembalikan { id, url }. */
@@ -2526,6 +2548,42 @@ var AssetService = (function () {
     return a;
   }
 
+  /** Origin web MCMS (mis. https://khairulkh.github.io) untuk sesi unggah yang dikirim langsung dari browser. */
+  function appOrigin() {
+    var m = /^(https?:\/\/[^\/]+)/.exec(String(Props.get('APP_URL') || ''));
+    return m ? m[1] : '';
+  }
+
+  /** Mencatat file yang sudah selesai di Drive. Sesi disimpan sampai tercatat, jadi aman dicoba ulang. */
+  function finishRecord(user, key, st, fileId, p) {
+    var cache = CacheService.getScriptCache();
+    st.fileId = fileId;
+    cache.put(key, JSON.stringify(st), UPLOAD_SESSION_TTL);
+    var dup = Db.all('ASSETS').filter(function (a) { return a.drive_file_id === fileId && Repo.alive(a); })[0];
+    var id;
+    if (dup) id = dup.asset_id;
+    else {
+      try {
+        id = Db.withLock(function () {
+          var assetId = record(user, { id: fileId }, st.meta, st.rel, 'UPLOAD');
+          saveThumb(assetId, p);
+          return assetId;
+        });
+      } catch (e) {
+        if (e instanceof AppError) throw e;
+        console.error('upload/record: ' + (e && e.stack ? e.stack : e));
+        throw new AppError(ERR.INTERNAL, 'File sudah tersimpan di Google Drive tetapi belum tercatat di arsip (' +
+          String(e && e.message || e).slice(0, 200) + '). Coba lagi.');
+      }
+    }
+    st.assetId = id;
+    cache.put(key, JSON.stringify(st), 3600);
+    try { return { done: true, asset: one(id) }; } catch (e) {
+      console.error('upload/one: ' + (e && e.stack ? e.stack : e));
+      return { done: true, asset: { assetId: id, fileName: st.meta.fileName, sizeBytes: st.meta.size } };
+    }
+  }
+
   return {
     unshareAll: unshareAll,
 
@@ -2601,7 +2659,7 @@ var AssetService = (function () {
       var s;
       try {
         s = StorageService.resumableStart(DriveService.uploadPath(project, meta.stage, fileType), fileName, mime, size,
-          function () { return DriveService.uploadFolder(project, meta.stage, fileType); });
+          function () { return DriveService.uploadFolder(project, meta.stage, fileType); }, appOrigin());
       } catch (e) {
         if (e instanceof AppError) throw e;
         console.error('uploadStart: ' + (e && e.stack ? e.stack : e));
@@ -2611,7 +2669,33 @@ var AssetService = (function () {
       CacheService.getScriptCache().put(UPLOAD_PREFIX + uploadId, JSON.stringify({
         uri: s.uri, storageId: s.storageId, userId: user.user_id, meta: meta, rel: rel, received: 0
       }), UPLOAD_SESSION_TTL);
-      return { uploadId: uploadId, chunkSize: UPLOAD_CHUNK_BYTES, size: size };
+      // uri: browser pemilik boleh mengirim potongan langsung ke Google Drive (lebih cepat, tanpa base64 & tanpa
+      // singgah di Apps Script). URI hanya berlaku untuk satu file ini. Bila CORS ditolak, browser memakai uploadChunk.
+      return { uploadId: uploadId, chunkSize: UPLOAD_CHUNK_BYTES, size: size, uri: s.uri };
+    },
+
+    /**
+     * Unggah langsung, langkah akhir: browser sudah mengirim semua potongan ke Google Drive dan menerima ID file.
+     * Server memeriksa file itu lalu mencatatnya ke arsip. Aman dipanggil ulang (tidak tercatat dua kali).
+     */
+    uploadFinish: function (user, p) {
+      var cache = CacheService.getScriptCache();
+      var key = UPLOAD_PREFIX + String(p.uploadId || '');
+      var st = null;
+      try { st = JSON.parse(cache.get(key) || 'null'); } catch (e) { st = null; }
+      if (!st || st.userId !== user.user_id) throw new AppError(ERR.VALIDATION, 'Sesi unggah tidak ditemukan atau sudah kedaluwarsa. Unggah ulang file ini.');
+      var fileId = String(p.fileId || '');
+      if (!/^[A-Za-z0-9_-]{5,128}$/.test(fileId)) throw new AppError(ERR.VALIDATION, 'ID file Google Drive tidak valid.');
+      if (st.assetId) return { done: true, asset: one(st.assetId) };
+      var f = null;
+      try { f = DriveApp.getFileById(fileId); } catch (e) { f = null; } // file simpul bisa belum terbaca: tetap dicatat
+      if (f) {
+        var actual = Number(f.getSize()) || 0;
+        if (actual && actual !== st.meta.size) {
+          throw new AppError(ERR.VALIDATION, 'Ukuran file di Google Drive (' + actual + ' byte) tidak sama dengan file asli. Unggah ulang file ini.');
+        }
+      }
+      return finishRecord(user, key, st, fileId, p);
     },
 
     /**
@@ -2640,19 +2724,16 @@ var AssetService = (function () {
       if (!last && bytes.length % (256 * 1024) !== 0) throw new AppError(ERR.VALIDATION, 'Ukuran potongan file harus kelipatan 256 KB.');
       if (offset === 0 && /^image\/(png|jpeg|webp)$/.test(st.meta.mimeType)) U.checkImageSignature(st.meta.mimeType, bytes.slice(0, 16));
 
-      var r = DriveUpload.put(st.uri, bytes, offset, size);
+      // File sudah selesai di Drive pada percobaan sebelumnya tetapi belum tercatat: langsung catat.
+      var r = st.fileId ? { done: true, id: st.fileId } : DriveUpload.put(st.uri, bytes, offset, size);
       if (!r.done) {
         st.received = r.received;
         cache.put(key, JSON.stringify(st), UPLOAD_SESSION_TTL);
         return { done: false, received: st.received, size: size };
       }
-      cache.remove(key);
-      var id = Db.withLock(function () {
-        var assetId = record(user, { id: r.id }, st.meta, st.rel, 'UPLOAD');
-        saveThumb(assetId, p);
-        return assetId;
-      });
-      return { done: true, received: size, size: size, asset: one(id) };
+      var out = finishRecord(user, key, st, r.id, p);
+      out.received = size; out.size = size;
+      return out;
     },
 
     /** Menautkan file yang sudah ada di Drive pemilik (tanpa unggah ulang). */
@@ -3585,6 +3666,7 @@ var ROUTES = {
   'assets.uploadStart': { permission: 'drive.manage', write: true, handler: function (p, user) { return AssetService.uploadStart(user, p); } },
   // Tanpa kunci global: tiap potongan bisa makan beberapa detik. Pencatatan akhir memakai Db.withLock sendiri.
   'assets.uploadChunk': { permission: 'drive.manage', handler: function (p, user) { return AssetService.uploadChunk(user, p); } },
+  'assets.uploadFinish': { permission: 'drive.manage', handler: function (p, user) { return AssetService.uploadFinish(user, p); } },
   'assets.linkDrive':   { permission: 'drive.manage', write: true, handler: function (p, user) { return AssetService.linkDrive(user, p); } },
   'assets.update':      { permission: 'drive.manage', write: true, handler: function (p, user) { return AssetService.update(user, p); } },
   'assets.setLink':     { permission: 'drive.manage', write: true, handler: function (p, user) { return AssetService.setLink(user, p); } },

@@ -136,7 +136,7 @@
     if (DEMO) return window.MCMSDemo.call(body);
     var ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
     // Potongan unggah bertahap (±11 MB) butuh waktu lebih lama di koneksi lambat
-    var timer = setTimeout(function () { if (ctrl) ctrl.abort(); }, action === 'assets.uploadChunk' ? 180000 : 45000);
+    var timer = setTimeout(function () { if (ctrl) ctrl.abort(); }, /^assets\.upload(Chunk|Start|Finish)$/.test(action) ? 180000 : 45000);
     // text/plain = "simple request" → tidak memicu preflight CORS yang tidak didukung Apps Script
     return fetch(CFG.API_URL, {
       method: 'POST', redirect: 'follow', body: body, signal: ctrl ? ctrl.signal : undefined,

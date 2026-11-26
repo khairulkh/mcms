@@ -18,7 +18,7 @@
  * Simpul ini hanya membuat file di dalam folder "MCMS Penyimpanan" miliknya, dan hanya menerima
  * permintaan yang membawa kode rahasia. Folder itu otomatis dibagikan (Editor) ke akun pemilik MCMS.
  */
-var NODE_VERSION = '1.1.0';
+var NODE_VERSION = '1.2.0';
 var MAX_BYTES = 12 * 1024 * 1024;
 
 function props_() { return PropertiesService.getScriptProperties(); }
@@ -135,7 +135,7 @@ function upStart_(b) {
   var mime = String(b.mime || 'application/octet-stream');
   var res = UrlFetchApp.fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&supportsAllDrives=true&fields=id', {
     method: 'post', contentType: 'application/json; charset=UTF-8', muteHttpExceptions: true, followRedirects: false,
-    headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken(), 'X-Upload-Content-Type': mime, 'X-Upload-Content-Length': String(size) },
+    headers: originHeaders_({ Authorization: 'Bearer ' + ScriptApp.getOAuthToken(), 'X-Upload-Content-Type': mime, 'X-Upload-Content-Length': String(size) }, b.origin),
     payload: JSON.stringify({ name: name, mimeType: mime, parents: [folderAt_(b.path).getId()] })
   });
   var h = res.getAllHeaders() || {};
@@ -145,6 +145,12 @@ function upStart_(b) {
     return { ok: false, error: res.getResponseCode() === 403 ? 'Drive simpul menolak unggahan (kuota penuh?).' : 'Sesi unggah tidak bisa dibuka (' + res.getResponseCode() + ').' };
   }
   return { ok: true, uri: uri };
+}
+
+/** Origin web MCMS di header pembuka sesi agar browser boleh mengirim potongan langsung (CORS). */
+function originHeaders_(h, origin) {
+  if (/^https:\/\/[A-Za-z0-9.-]+(:\d+)?$/.test(String(origin || ''))) h.Origin = origin;
+  return h;
 }
 
 function list_(b) {

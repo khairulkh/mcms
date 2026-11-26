@@ -137,7 +137,7 @@
     if (DEMO) return window.MCMSDemo.call(body);
     var ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
     // Potongan unggah bertahap (±11 MB) butuh waktu lebih lama di koneksi lambat
-    var timer = setTimeout(function () { if (ctrl) ctrl.abort(); }, action === 'assets.uploadChunk' ? 180000 : 45000);
+    var timer = setTimeout(function () { if (ctrl) ctrl.abort(); }, /^assets\.upload(Chunk|Start|Finish)$/.test(action) ? 180000 : 45000);
     // text/plain = "simple request" → tidak memicu preflight CORS yang tidak didukung Apps Script
     return fetch(CFG.API_URL, {
       method: 'POST', redirect: 'follow', body: body, signal: ctrl ? ctrl.signal : undefined,
@@ -2657,7 +2657,7 @@
   'use strict';
   var $ = MC.$, $$ = MC.$$, esc = MC.esc, icon = MC.icon;
   // ≤ 10 MB: satu permintaan. Lebih besar: unggah bertahap per potongan langsung ke Google Drive (hingga 2 GB).
-  var SINGLE_MAX = 10 * 1024 * 1024;
+  var SINGLE_MAX = 1024 * 1024; // > 1 MB: unggah bertahap langsung ke Drive (cepat, tahan koneksi lambat)
   var MAX_BYTES = MC.DEMO ? 2 * 1024 * 1024 : 2 * 1024 * 1024 * 1024;
   var STAGES = [['EVIDENCE', 'Bukti kerja'], ['BRIEF', 'Brief / bahan'], ['WORKING', 'File kerja (draft)'], ['REVIEW', 'Untuk review'], ['FINAL', 'Hasil final']];
   var STAGE_LABEL = {}; STAGES.forEach(function (s) { STAGE_LABEL[s[0]] = s[1]; }); STAGE_LABEL.OTHER = 'Lainnya';
@@ -2735,7 +2735,7 @@
         var ul = $('#u-list', form);
         ul.innerHTML = files.map(function (x, i) {
           var st = x.state === 'error' ? '<span class="due due-danger">' + icon('alert', 'width="13" height="13"') + esc(x.err) + '</span>'
-            : x.state === 'uploading' ? '<span class="due due-info"><span class="spinner" aria-hidden="true"></span>Mengunggah…' + (x.pct != null ? ' ' + x.pct + '%' : '') + '</span>'
+            : x.state === 'uploading' ? '<span class="due due-info" data-st="' + i + '"><span class="spinner" aria-hidden="true"></span>' + esc(progressText(x)) + '</span>'
               : x.state === 'done' ? '<span class="due due-success">' + icon('check', 'width="13" height="13"') + 'Tersimpan</span>'
                 : '<span class="hint">' + MC.fmtSize(x.file.size) + '</span>';
           return '<li class="upload-item"><span class="dot-ico">' + icon(/^image\//.test(x.file.type) ? 'image' : /^video\//.test(x.file.type) ? 'video' : 'file') + '</span>' +
@@ -2743,6 +2743,13 @@
             (x.state === 'ready' || x.state === 'error' ? '<button class="icon-btn sm" type="button" data-rm="' + i + '" aria-label="Hapus ' + esc(x.file.name) + ' dari daftar">' + icon('x') + '</button>' : '') + '</li>';
         }).join('');
         $$('[data-rm]', ul).forEach(function (b) { b.addEventListener('click', function () { files.splice(Number(b.getAttribute('data-rm')), 1); drawList(); }); });
+      }
+      /** Perbarui hanya teks status satu file (tanpa menggambar ulang seluruh daftar) — ringan saat progres cepat. */
+      function drawStatus(x) {
+        var i = files.indexOf(x);
+        var el = i >= 0 ? form.querySelector('[data-st="' + i + '"]') : null;
+        if (!el) { drawList(); return; }
+        el.lastChild.textContent = progressText(x);
       }
       function uploadAll(form, base) {
         var queue = files.filter(function (x) { return x.state === 'ready'; });
@@ -2754,7 +2761,7 @@
             x.state = 'uploading'; drawList();
             // Thumbnail kecil dibuat di browser → pratinjau ringan tanpa memuat file asli
             if (x.file.size > SINGLE_MAX) {
-              return MC.uploadLarge(x.file, base, function (pct) { x.pct = pct; drawList(); });
+              return MC.uploadLarge(x.file, base, function (info) { x.prog = info; drawStatus(x); });
             }
             return Promise.all([MC.fileToBase64(x.file), MC.makeThumb(x.file)]).then(function (r) {
               var th = r[1];
@@ -2778,39 +2785,138 @@
     }, function (e) { MC.toast(e.message, 'error'); });
   };
 
+  /** Teks status unggah: persen, kecepatan, sisa waktu. */
+  function progressText(x) {
+    var p = x.prog;
+    if (!p) return 'Menyiapkan…';
+    if (p.phase === 'finish') return 'Menyimpan ke arsip…';
+    var t = 'Mengunggah… ' + p.pct + '%';
+    if (p.speed > 0) t += ' · ' + MC.fmtSize(p.speed) + '/dtk';
+    if (p.eta > 0 && p.pct < 100) t += ' · ' + (p.eta >= 60 ? Math.ceil(p.eta / 60) + ' mnt lagi' : Math.ceil(p.eta) + ' dtk lagi');
+    if (p.retry) t += ' · menyambung ulang…';
+    return t;
+  }
+
+  var KB256 = 256 * 1024, MIN_CHUNK = 4 * KB256, MAX_CHUNK = 32 * 1024 * 1024;
+
+  /** PUT satu potongan ke URI sesi Google Drive lewat XHR (progres per byte). Hasil: {status, range, body}. */
+  function drivePut(uri, blob, start, total, onBytes, timeoutMs) {
+    return new Promise(function (resolve, reject) {
+      var xhr = new XMLHttpRequest();
+      xhr.open('PUT', uri, true);
+      xhr.timeout = timeoutMs;
+      xhr.setRequestHeader('Content-Range', blob ? 'bytes ' + start + '-' + (start + blob.size - 1) + '/' + total : 'bytes */' + total);
+      if (xhr.upload && onBytes) xhr.upload.onprogress = function (e) { if (e.lengthComputable) onBytes(e.loaded); };
+      xhr.onload = function () { resolve({ status: xhr.status, range: xhr.getResponseHeader('Range') || '', body: xhr.responseText }); };
+      xhr.onerror = function () { reject({ code: 'NETWORK', status: xhr.status }); };
+      xhr.ontimeout = function () { reject({ code: 'TIMEOUT' }); };
+      xhr.send(blob || null);
+    });
+  }
+  function rangeEnd(r) { var m = /bytes=0-(\d+)/.exec(r || ''); return m ? Number(m[1]) + 1 : 0; }
+
   /**
-   * Unggah bertahap untuk file besar: buka sesi, lalu kirim potongan berurutan (default 8 MB).
-   * Potongan yang gagal karena jaringan dicoba ulang hingga 4 kali; server melewati potongan yang sudah diterima.
-   * onProgress(persen). Mengembalikan aset yang tersimpan.
+   * Unggah bertahap untuk file > 1 MB.
+   * 1) Langsung: potongan mentah dikirim dari browser ke sesi Google Drive (tanpa base64, tanpa singgah di Apps Script).
+   *    Ukuran potongan menyesuaikan kecepatan (1–32 MB); putus/timeout → tanya posisi terakhir ke Drive lalu lanjut.
+   * 2) Cadangan: bila browser tidak diizinkan mengirim langsung (CORS), potongan dikirim lewat server (assets.uploadChunk).
+   * onProgress({pct, speed, eta, retry, phase}). Mengembalikan aset yang tersimpan.
    */
   MC.uploadLarge = function (file, base, onProgress) {
     var mime = file.type || 'application/octet-stream';
+    var size = file.size, t0 = Date.now(), lastBytes = 0;
+    function report(done, extra) {
+      var secs = (Date.now() - t0) / 1000, speed = secs > 0.5 ? done / secs : 0;
+      if (onProgress) onProgress(Object.assign({ pct: Math.min(100, Math.floor(done * 100 / size)), speed: speed, eta: speed ? (size - done) / speed : 0 }, extra || {}));
+    }
     return MC.makeThumb(file).catch(function () { return null; }).then(function (th) {
-      return MC.api('assets.uploadStart', Object.assign({ fileName: file.name, mimeType: mime, size: file.size }, base)).then(function (s) {
-        var chunk = s.chunkSize, size = file.size;
-        function send(offset, tries) {
-          var end = Math.min(offset + chunk, size), last = end === size;
-          return MC.fileToBase64(file.slice(offset, end)).then(function (data) {
-            var p = { uploadId: s.uploadId, offset: offset, dataBase64: data };
-            if (last && th) { p.thumbBase64 = th.data; p.thumbMime = th.mime; }
-            return MC.api('assets.uploadChunk', p);
-          }).then(function (r) {
-            if (onProgress) onProgress(Math.min(100, Math.floor(r.received * 100 / size)));
-            if (r.done) {
-              if (th) MC.thumbPut(r.asset.assetId, 'data:' + th.mime + ';base64,' + th.data);
-              return r.asset;
-            }
-            return send(r.received, 0);
-          }, function (e) {
-            if (e && e.code === 'CONFLICT' && e.data && e.data.received >= 0 && tries < 4) return send(e.data.received, tries + 1);
-            if (e && (e.code === 'NETWORK' || e.code === 'TIMEOUT' || e.code === 'BUSY' || e.code === 'INTERNAL') && tries < 4) {
-              return new Promise(function (r) { setTimeout(r, 2000 * (tries + 1)); }).then(function () { return send(offset, tries + 1); });
+      return MC.api('assets.uploadStart', Object.assign({ fileName: file.name, mimeType: mime, size: size }, base)).then(function (s) {
+        var thumb = th ? { thumbBase64: th.data, thumbMime: th.mime } : {};
+        function done(asset) {
+          if (th && asset && asset.assetId) MC.thumbPut(asset.assetId, 'data:' + th.mime + ';base64,' + th.data);
+          return asset;
+        }
+        function finish(fileId, tries) {
+          if (onProgress) onProgress({ pct: 100, phase: 'finish' });
+          return MC.api('assets.uploadFinish', Object.assign({ uploadId: s.uploadId, fileId: fileId }, thumb)).then(function (r) { return done(r.asset); }, function (e) {
+            if (e && /NETWORK|TIMEOUT|BUSY|INTERNAL/.test(e.code) && tries < 5) {
+              return new Promise(function (r) { setTimeout(r, 2000 * (tries + 1)); }).then(function () { return finish(fileId, tries + 1); });
             }
             throw e;
           });
         }
-        if (onProgress) onProgress(0);
-        return send(0, 0);
+
+        /* ---------- 1) langsung ke Google Drive ---------- */
+        var chunk = Math.max(MIN_CHUNK, Math.min(s.chunkSize || 8 * 1024 * 1024, MAX_CHUNK));
+        var okStreak = 0, anyOk = false;
+        function direct(offset, fails) {
+          var end = Math.min(offset + chunk, size), blob = file.slice(offset, end), tStart = Date.now();
+          // batas waktu sebanding ukuran potongan (asumsi terlambat ±40 KB/dtk), minimal 60 dtk
+          var timeout = Math.max(60000, Math.ceil(blob.size / 40000) * 1000);
+          return drivePut(s.uri, blob, offset, size, function (b) { report(offset + b); }, timeout).then(function (r) {
+            if (r.status === 200 || r.status === 201) {
+              var j = null; try { j = JSON.parse(r.body); } catch (e) { j = null; }
+              if (!j || !j.id) throw { code: 'INTERNAL', message: 'Google Drive tidak mengembalikan ID file.' };
+              report(size);
+              return finish(j.id, 0);
+            }
+            if (r.status === 308) {
+              anyOk = true;
+              var got = rangeEnd(r.range);
+              // lancar: potongan diperbesar (maks 32 MB, kelipatan 256 KB) agar permintaan lebih sedikit
+              if (++okStreak >= 2 && (Date.now() - tStart) < 20000 && chunk < MAX_CHUNK) { chunk = Math.min(MAX_CHUNK, chunk * 2); okStreak = 0; }
+              report(got);
+              return direct(got, 0);
+            }
+            if (r.status === 404 || r.status === 410) throw { code: 'VALIDATION', message: 'Sesi unggah sudah kedaluwarsa. Unggah ulang file ini.' };
+            throw { code: r.status >= 500 || r.status === 429 ? 'NETWORK' : 'HTTP', status: r.status, message: 'Google Drive menolak potongan file (' + r.status + ').' };
+          }).catch(function (e) {
+            if (e && e.code === 'NETWORK' && e.status === 0 && !anyOk && offset === 0 && fails === 0) throw { code: 'NO_DIRECT' };
+            if (e && (e.code === 'NETWORK' || e.code === 'TIMEOUT') && fails < 8) {
+              okStreak = 0;
+              if (e.code === 'TIMEOUT' || fails >= 1) chunk = Math.max(MIN_CHUNK, Math.floor(chunk / 2 / KB256) * KB256);
+              if (onProgress) report(offset, { retry: true });
+              return new Promise(function (r) { setTimeout(r, Math.min(15000, 1500 * (fails + 1))); }).then(function () {
+                // tanyakan posisi terakhir yang diterima Drive, lalu lanjut dari sana
+                return drivePut(s.uri, null, 0, size, null, 30000).then(function (q) {
+                  if (q.status === 200 || q.status === 201) { var j = null; try { j = JSON.parse(q.body); } catch (x) { j = null; } if (j && j.id) return finish(j.id, 0); }
+                  return direct(q.status === 308 ? rangeEnd(q.range) : offset, fails + 1);
+                }, function () { return direct(offset, fails + 1); });
+              });
+            }
+            throw e;
+          });
+        }
+
+        /* ---------- 2) cadangan: lewat server ---------- */
+        function viaServer(offset, tries, pc) {
+          var end = Math.min(offset + pc, size);
+          return MC.fileToBase64(file.slice(offset, end)).then(function (d) {
+            var p = { uploadId: s.uploadId, offset: offset, dataBase64: d };
+            if (end === size) Object.assign(p, thumb);
+            return MC.api('assets.uploadChunk', p);
+          }).then(function (r) {
+            report(r.received || 0);
+            if (r.done) return done(r.asset);
+            return viaServer(r.received, 0, pc);
+          }, function (e) {
+            if (e && e.code === 'CONFLICT' && e.data && e.data.received >= 0 && tries < 6) return viaServer(e.data.received, tries + 1, pc);
+            if (e && /NETWORK|TIMEOUT|BUSY|INTERNAL/.test(e.code) && tries < 6) {
+              if (e.code === 'TIMEOUT') pc = Math.max(MIN_CHUNK, Math.floor(pc / 2 / KB256) * KB256);
+              if (onProgress) report(offset, { retry: true });
+              return new Promise(function (r) { setTimeout(r, 2000 * (tries + 1)); }).then(function () { return viaServer(offset, tries + 1, pc); });
+            }
+            throw e;
+          });
+        }
+
+        report(0);
+        if (!s.uri) return viaServer(0, 0, Math.min(s.chunkSize, 4 * 1024 * 1024));
+        return direct(0, 0).catch(function (e) {
+          if (e && e.code === 'NO_DIRECT') { t0 = Date.now(); return viaServer(0, 0, Math.min(s.chunkSize, 4 * 1024 * 1024)); }
+          if (e && !e.message) e.message = 'Unggah terputus. Periksa koneksi lalu coba lagi.';
+          throw e;
+        });
       });
     });
   };
