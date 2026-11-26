@@ -1761,6 +1761,34 @@ var DriveUpload = (function () {
     },
 
     /**
+     * Tanya posisi sesi unggah ke Google Drive. { done:true, id } bila file sudah lengkap,
+     * atau { done:false, received } (byte yang sudah diterima).
+     */
+    status: function (uri, size) {
+      var res;
+      try {
+        res = UrlFetchApp.fetch(uri, {
+          method: 'put', muteHttpExceptions: true, followRedirects: false,
+          headers: { 'Content-Range': 'bytes */' + size }
+        });
+      } catch (e) {
+        throw new AppError(ERR.INTERNAL, 'Status unggah tidak bisa dicek (' + String(e && e.message || e).slice(0, 200) + '). Coba lagi.');
+      }
+      var code = res.getResponseCode();
+      if (code === 200 || code === 201) {
+        var j = null;
+        try { j = JSON.parse(res.getContentText()); } catch (e) { j = null; }
+        if (j && j.id) return { done: true, id: String(j.id) };
+      }
+      if (code === 308) {
+        var m = /bytes=0-(\d+)/.exec(header(res, 'Range'));
+        return { done: false, received: m ? Number(m[1]) + 1 : 0 };
+      }
+      if (code === 404 || code === 410) throw new AppError(ERR.VALIDATION, 'Sesi unggah sudah kedaluwarsa. Unggah ulang file ini.');
+      throw new AppError(ERR.INTERNAL, 'Status unggah tidak terbaca (' + code + '). Coba lagi.');
+    },
+
+    /**
      * Kirim satu potongan. Mengembalikan { done:false, received } bila masih ada sisa,
      * atau { done:true, id } bila file selesai tersimpan.
      */
@@ -2675,8 +2703,10 @@ var AssetService = (function () {
     },
 
     /**
-     * Unggah langsung, langkah akhir: browser sudah mengirim semua potongan ke Google Drive dan menerima ID file.
-     * Server memeriksa file itu lalu mencatatnya ke arsip. Aman dipanggil ulang (tidak tercatat dua kali).
+     * Unggah langsung, langkah akhir / cek status. Balasan akhir Google Drive (200 + ID file) tidak membawa header
+     * CORS, jadi browser sering tidak bisa membacanya: tanpa fileId, server menanyakan status sesi ke Drive.
+     * Hasil: { done:true, asset } bila file lengkap & tercatat, atau { done:false, received } untuk melanjutkan.
+     * Aman dipanggil ulang (tidak tercatat dua kali).
      */
     uploadFinish: function (user, p) {
       var cache = CacheService.getScriptCache();
@@ -2684,9 +2714,14 @@ var AssetService = (function () {
       var st = null;
       try { st = JSON.parse(cache.get(key) || 'null'); } catch (e) { st = null; }
       if (!st || st.userId !== user.user_id) throw new AppError(ERR.VALIDATION, 'Sesi unggah tidak ditemukan atau sudah kedaluwarsa. Unggah ulang file ini.');
-      var fileId = String(p.fileId || '');
-      if (!/^[A-Za-z0-9_-]{5,128}$/.test(fileId)) throw new AppError(ERR.VALIDATION, 'ID file Google Drive tidak valid.');
       if (st.assetId) return { done: true, asset: one(st.assetId) };
+      var fileId = String(p.fileId || '') || String(st.fileId || '');
+      if (!fileId) {
+        var q = DriveUpload.status(st.uri, st.meta.size);
+        if (!q.done) return { done: false, received: q.received, size: st.meta.size };
+        fileId = q.id;
+      }
+      if (!/^[A-Za-z0-9_-]{5,128}$/.test(fileId)) throw new AppError(ERR.VALIDATION, 'ID file Google Drive tidak valid.');
       var f = null;
       try { f = DriveApp.getFileById(fileId); } catch (e) { f = null; } // file simpul bisa belum terbaca: tetap dicatat
       if (f) {

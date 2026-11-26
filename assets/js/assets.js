@@ -184,6 +184,17 @@
           if (th && asset && asset.assetId) MC.thumbPut(asset.assetId, 'data:' + th.mime + ';base64,' + th.data);
           return asset;
         }
+        /** Status sesi lewat server (Drive → Apps Script), dipakai saat balasan Drive tidak terbaca di browser. */
+        function serverStatus(tries) {
+          return MC.api('assets.uploadFinish', Object.assign({ uploadId: s.uploadId }, thumb)).then(function (r) {
+            return r.done ? { done: true, asset: r.asset } : { done: false, received: r.received };
+          }, function (e) {
+            if (e && /NETWORK|TIMEOUT|BUSY|INTERNAL/.test(e.code) && tries < 5) {
+              return new Promise(function (r) { setTimeout(r, 2000 * (tries + 1)); }).then(function () { return serverStatus(tries + 1); });
+            }
+            throw e;
+          });
+        }
         function finish(fileId, tries) {
           if (onProgress) onProgress({ pct: 100, phase: 'finish' });
           return MC.api('assets.uploadFinish', Object.assign({ uploadId: s.uploadId, fileId: fileId }, thumb)).then(function (r) { return done(r.asset); }, function (e) {
@@ -219,20 +230,22 @@
             if (r.status === 404 || r.status === 410) throw { code: 'VALIDATION', message: 'Sesi unggah sudah kedaluwarsa. Unggah ulang file ini.' };
             throw { code: r.status >= 500 || r.status === 429 ? 'NETWORK' : 'HTTP', status: r.status, message: 'Google Drive menolak potongan file (' + r.status + ').' };
           }).catch(function (e) {
-            if (e && e.code === 'NETWORK' && e.status === 0 && !anyOk && offset === 0 && fails === 0) throw { code: 'NO_DIRECT' };
-            if (e && (e.code === 'NETWORK' || e.code === 'TIMEOUT') && fails < 8) {
-              okStreak = 0;
-              if (e.code === 'TIMEOUT' || fails >= 1) chunk = Math.max(MIN_CHUNK, Math.floor(chunk / 2 / KB256) * KB256);
-              if (onProgress) report(offset, { retry: true });
-              return new Promise(function (r) { setTimeout(r, Math.min(15000, 1500 * (fails + 1))); }).then(function () {
-                // tanyakan posisi terakhir yang diterima Drive, lalu lanjut dari sana
-                return drivePut(s.uri, null, 0, size, null, 30000).then(function (q) {
-                  if (q.status === 200 || q.status === 201) { var j = null; try { j = JSON.parse(q.body); } catch (x) { j = null; } if (j && j.id) return finish(j.id, 0); }
-                  return direct(q.status === 308 ? rangeEnd(q.range) : offset, fails + 1);
-                }, function () { return direct(offset, fails + 1); });
-              });
-            }
-            throw e;
+            if (!e || (e.code !== 'NETWORK' && e.code !== 'TIMEOUT') || fails >= 8) throw e;
+            // Balasan tidak terbaca (mis. balasan akhir Drive tanpa header CORS) atau koneksi putus:
+            // tanyakan status sesi lewat server — bisa jadi file sudah lengkap.
+            okStreak = 0;
+            var lastChunk = end === size;
+            if (lastChunk && onProgress) onProgress({ pct: 100, phase: 'finish' });
+            return serverStatus(0).then(function (q) {
+              if (q.done) return done(q.asset);
+              var got = q.received || 0;
+              if (got === 0 && !anyOk && e.code === 'NETWORK' && fails === 0) throw { code: 'NO_DIRECT' }; // CORS ditolak sejak awal
+              if (got > offset) anyOk = true;
+              if (e.code === 'TIMEOUT' || (got <= offset && !lastChunk)) chunk = Math.max(MIN_CHUNK, Math.floor(chunk / 2 / KB256) * KB256);
+              if (onProgress) report(got, { retry: got <= offset });
+              var wait = got > offset ? 0 : Math.min(15000, 1500 * (fails + 1));
+              return new Promise(function (r) { setTimeout(r, wait); }).then(function () { return direct(got, got > offset ? 0 : fails + 1); });
+            });
           });
         }
 
